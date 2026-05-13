@@ -1,0 +1,13 @@
+timestamp,src_ip,attacker_hostname,dpid,dpid_name,segment_description,action,reason,meter_id,limit_pps,idle_timeout,hard_timeout,note
+2026-05-12 00:25:25.289969,10.0.0.1,h1,2,s2,s2-segment-attacker-h1,RATE_LIMIT_ICMP,ATTACK_CONFIRMED_DELAY_PASSED,101,50,30,60,Adaptive ICMP rate limiting activated [LIGHT]
+2026-05-12 00:25:30.928382,10.0.0.7,h7,3,s3,s3-segment-attacker-h7,RATE_LIMIT_ICMP,ATTACK_CONFIRMED_DELAY_PASSED,107,50,30,60,Adaptive ICMP rate limiting activated [LIGHT]
+2026-05-12 00:25:35.781021,10.0.0.13,h13,4,s4,s4-segment-attacker-h13,RATE_LIMIT_ICMP,ATTACK_CONFIRMED_DELAY_PASSED,113,50,30,60,Adaptive ICMP rate limiting activated [LIGHT]
+2026-05-12 00:25:40.265938,10.0.0.18,h18,5,s5,s5-segment-attacker-h18,RATE_LIMIT_ICMP,ATTACK_CONFIRMED_DELAY_PASSED,118,50,30,60,Adaptive ICMP rate limiting activated [LIGHT]
+2026-05-12 00:26:25.770495,10.0.0.1,h1,2,s2,s2-segment-attacker-h1,RELEASE_METER,HARD_TIMEOUT_EXPIRED,101,50,30,60,Mitigation released; network returned to normal
+2026-05-12 00:26:25.770750,10.0.0.1,h1,2,s2,s2-segment-attacker-h1,RATE_LIMIT_ICMP,ATTACK_CONFIRMED_DELAY_PASSED,101,20,30,60,Adaptive ICMP rate limiting activated [MEDIUM]
+2026-05-12 00:26:31.408615,10.0.0.7,h7,3,s3,s3-segment-attacker-h7,RELEASE_METER,HARD_TIMEOUT_EXPIRED,107,50,30,60,Mitigation released; network returned to normal
+2026-05-12 00:26:31.408942,10.0.0.7,h7,3,s3,s3-segment-attacker-h7,RATE_LIMIT_ICMP,ATTACK_CONFIRMED_DELAY_PASSED,107,20,30,60,Adaptive ICMP rate limiting activated [MEDIUM]
+2026-05-12 00:26:36.187762,10.0.0.13,h13,4,s4,s4-segment-attacker-h13,RELEASE_METER,HARD_TIMEOUT_EXPIRED,113,50,30,60,Mitigation released; network returned to normal
+2026-05-12 00:26:36.188113,10.0.0.13,h13,4,s4,s4-segment-attacker-h13,RATE_LIMIT_ICMP,ATTACK_CONFIRMED_DELAY_PASSED,113,50,30,60,Adaptive ICMP rate limiting activated [LIGHT]
+2026-05-12 00:26:40.567454,10.0.0.18,h18,5,s5,s5-segment-attacker-h18,RELEASE_METER,HARD_TIMEOUT_EXPIRED,118,50,30,60,Mitigation released; network returned to normal
+2026-05-12 00:26:40.567786,10.0.0.18,h18,5,s5,s5-segment-attacker-h18,RATE_LIMIT_ICMP,ATTACK_CONFIRMED_DELAY_PASSED,118,20,30,60,Adaptive ICMP rate limiting activated [MEDIUM]

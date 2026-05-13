@@ -1,0 +1,5 @@
+src_ip,host,switch,segment,attack_events,warning_events,confirmed_events,limited_events,avg_packet_rate,max_packet_rate,max_threat_score
+10.0.0.1,h1,s2,s2-segment-attacker-h1,2525,1483,917,103,241.52,368.96,95.0
+10.0.0.13,h13,s4,s4-segment-attacker-h13,703,310,270,101,70.01,298.84,55.0
+10.0.0.18,h18,s5,s5-segment-attacker-h18,775,266,390,97,76.75,358.66,70.0
+10.0.0.7,h7,s3,s3-segment-attacker-h7,1087,443,520,102,98.56,237.34,70.0
