@@ -1,5 +1,0 @@
-src_ip,host,switch,segment,total_packets,icmp_to_victim_packets,tcp_packets,udp_packets,arp_packets,total_bytes,avg_icmp_attack_pps,max_icmp_attack_pps,first_seen,last_seen
-10.0.0.1,h1,s2,s2-segment-attacker-h1,5126,5126,0,0,0,215292,44.57,97.0,2026-05-11 17:25:15.503451136,2026-05-11 17:27:09.781285888
-10.0.0.7,h7,s3,s3-segment-attacker-h7,5263,5263,0,0,0,221046,48.73,127.0,2026-05-11 17:25:27.801372160,2026-05-11 17:27:14.232800
-10.0.0.13,h13,s4,s4-segment-attacker-h13,5373,5373,0,0,0,225666,55.39,190.0,2026-05-11 17:25:41.870989056,2026-05-11 17:27:17.097816832
-10.0.0.18,h18,s5,s5-segment-attacker-h18,5350,5350,0,0,0,224700,60.8,200.0,2026-05-11 17:25:51.172708096,2026-05-11 17:27:18.212372992

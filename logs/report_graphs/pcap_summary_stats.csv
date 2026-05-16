@@ -1,3 +1,0 @@
-dataset,total_packets,total_bytes,icmp_packets,tcp_packets,udp_packets,arp_packets,victim_dst_packets,victim_src_packets,attack_icmp_packets,tcp_retransmissions,tcp_duplicate_acks,tcp_lost_segments,tcp_fast_retransmissions,first_packet_time,last_packet_time,duration_seconds,avg_packets_per_second
-baseline,692,44968,258,24,24,386,100,100,8,0,0,0,0,2026-05-11 17:23:09.542529024,2026-05-11 17:24:15.791901184,66.25,10.45
-ddos,39995,1680749,39554,0,7,434,21112,18424,21112,0,0,0,0,2026-05-11 17:25:11.752873984,2026-05-11 17:27:21.350792960,129.6,308.61
