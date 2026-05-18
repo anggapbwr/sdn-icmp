@@ -24,6 +24,7 @@ import os
 import csv
 import time
 import joblib
+import numpy as np
 import pandas as pd
 from collections import deque, defaultdict
 from datetime import datetime
@@ -77,7 +78,11 @@ class MonitorSwitch13(app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super(MonitorSwitch13, self).__init__(*args, **kwargs)
 
-        self.base_dir   = "/home/kali/sdn-icmp"
+        base_candidates = [
+            "/home/kali/sdn-icmp",
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
+        ]
+        self.base_dir = next((p for p in base_candidates if os.path.isdir(p)), base_candidates[-1])
         self.logs_dir   = os.path.join(self.base_dir, "logs")
         self.models_dir = os.path.join(self.base_dir, "models")
 
@@ -87,6 +92,14 @@ class MonitorSwitch13(app_manager.RyuApp):
         self.model_candidates = [
             os.path.join(self.models_dir, "svm_model.pkl"),
             os.path.join(self.base_dir, "svm_model.pkl"),
+        ]
+        self.scaler_candidates = [
+            os.path.join(self.models_dir, "svm_scaler.pkl"),
+            os.path.join(self.base_dir, "svm_scaler.pkl"),
+        ]
+        self.feature_name_candidates = [
+            os.path.join(self.models_dir, "svm_feature_names.pkl"),
+            os.path.join(self.base_dir, "svm_feature_names.pkl"),
         ]
 
         self.mac_to_port = defaultdict(dict)
@@ -117,6 +130,7 @@ class MonitorSwitch13(app_manager.RyuApp):
 
         # ── Session state ─────────────────────────────────────────────────
         self.session_packet_times = defaultdict(deque)
+        self.session_packet_sizes = defaultdict(deque)
         self.session_stats = defaultdict(lambda: {
             "start_time": None,
             "last_seen":  None,
@@ -149,6 +163,7 @@ class MonitorSwitch13(app_manager.RyuApp):
 
         # ── Model ─────────────────────────────────────────────────────────
         self.model         = None
+        self.scaler        = None
         self.feature_names = []
 
         self._startup_banner()
@@ -272,18 +287,45 @@ class MonitorSwitch13(app_manager.RyuApp):
     # ══════════════════════════════════════════════════════════════════════
 
     def _load_model(self):
+        self.model = None
+        self.scaler = None
+        self.feature_names = []
+
         for path in self.model_candidates:
             if os.path.exists(path):
                 try:
-                    self.model         = joblib.load(path)
-                    self.feature_names = list(getattr(self.model, "feature_names_in_", []))
+                    self.model = joblib.load(path)
                     self._ok(f"SVM_LOADED | path={path}")
-                    return
+                    break
                 except Exception as e:
                     self.logger.error("Failed to load model %s: %s", path, e)
-        self.model         = None
-        self.feature_names = []
-        self._warn("SVM_NOT_LOADED | Detection=threshold+EWMA only")
+
+        for path in self.scaler_candidates:
+            if os.path.exists(path):
+                try:
+                    self.scaler = joblib.load(path)
+                    self._ok(f"SVM_SCALER_LOADED | path={path}")
+                    break
+                except Exception as e:
+                    self.logger.error("Failed to load scaler %s: %s", path, e)
+
+        for path in self.feature_name_candidates:
+            if os.path.exists(path):
+                try:
+                    names = joblib.load(path)
+                    self.feature_names = [str(v) for v in names]
+                    self._ok(f"SVM_FEATURE_NAMES_LOADED | path={path}")
+                    break
+                except Exception as e:
+                    self.logger.error("Failed to load feature names %s: %s", path, e)
+
+        if not self.feature_names and self.model is not None:
+            self.feature_names = list(getattr(self.model, "feature_names_in_", []))
+
+        if self.model is None:
+            self._warn("SVM_NOT_LOADED | Detection=threshold+EWMA only")
+        elif self.scaler is None:
+            self._warn("SVM_SCALER_NOT_LOADED | Prediction runs without normalization")
 
     # ══════════════════════════════════════════════════════════════════════
     # CSV
@@ -358,37 +400,36 @@ class MonitorSwitch13(app_manager.RyuApp):
     # Feature & prediction
     # ══════════════════════════════════════════════════════════════════════
 
-    def _build_feature_dataframe(self, dpid, src_mac, dst_mac, src_ip, dst_ip,
-                                  eth_type, ip_proto, icmp_type, in_port,
-                                  out_port, packet_rate):
+    def _build_feature_dataframe(self, dst_ip, packet_features):
         values = {
-            "timestamp":   0.0,
-            "dpid":        float(dpid),
-            "src_mac":     self._mac_to_number(src_mac),
-            "dst_mac":     self._mac_to_number(dst_mac),
-            "src_ip":      self._ip_to_number(src_ip),
-            "dst_ip":      self._ip_to_number(dst_ip),
-            "eth_type":    float(eth_type),
-            "ip_proto":    float(ip_proto),
-            "icmp_type":   float(icmp_type),
-            "in_port":     float(in_port),
-            "out_port":    float(out_port) if isinstance(out_port, (int, float)) else 0.0,
-            "packet_rate": float(packet_rate),
-            "prediction":  0.0,
-            "label":       0.0,
+            "is_to_victim": float(1 if dst_ip == self.VICTIM_IP else 0),
+            "packet_rate_ewma": float(packet_features["packet_rate_ewma"]),
+            "packet_count_1s": float(packet_features["packet_count_1s"]),
+            "byte_count_1s": float(packet_features["byte_count_1s"]),
+            "avg_pkt_size": float(packet_features["avg_pkt_size"]),
+            "pkt_size_std": float(packet_features["pkt_size_std"]),
+            "inter_arrival_std": float(packet_features["inter_arrival_std"]),
         }
-        if self.feature_names:
-            row = {n: values.get(n, 0.0) for n in self.feature_names}
-            return pd.DataFrame([row], columns=self.feature_names)
-        fallback = ["dpid","src_mac","dst_mac","src_ip","dst_ip",
-                    "eth_type","ip_proto","icmp_type","in_port","out_port",
-                    "packet_rate","prediction"]
-        row = {n: values[n] for n in fallback}
-        return pd.DataFrame([row], columns=fallback)
+        ordered_columns = self.feature_names or [
+            "is_to_victim",
+            "packet_rate_ewma",
+            "packet_count_1s",
+            "byte_count_1s",
+            "avg_pkt_size",
+            "pkt_size_std",
+            "inter_arrival_std",
+        ]
+        row = {n: values.get(n, 0.0) for n in ordered_columns}
+        return pd.DataFrame([row], columns=ordered_columns)
 
     def _predict_traffic(self, features_df):
-        if self.model is None: return 0
-        try:   return int(self.model.predict(features_df)[0])
+        if self.model is None:
+            return 0
+        try:
+            data = features_df.values
+            if self.scaler is not None:
+                data = self.scaler.transform(data)
+            return int(self.model.predict(data)[0])
         except Exception as e:
             self.logger.error("Prediction failed: %s", e)
             return 0
@@ -408,17 +449,43 @@ class MonitorSwitch13(app_manager.RyuApp):
             return f"{src_ip}:{src_port}->{dst_ip}:{dst_port}:{protocol_name}"
         return f"{src_ip}->{dst_ip}:{protocol_name}"
 
-    def _get_packet_rate(self, session_id):
+    def _get_icmp_window_features(self, session_id, packet_size):
         now = time.time()
-        q   = self.session_packet_times[session_id]
-        q.append(now)
-        while q and (now - q[0] > self.rate_window_seconds):
-            q.popleft()
-        raw_rate = float(len(q)) / self.rate_window_seconds
-        prev     = self.ewma_rates[session_id]
+        time_q = self.session_packet_times[session_id]
+        size_q = self.session_packet_sizes[session_id]
+        time_q.append(now)
+        size_q.append((now, float(packet_size)))
+
+        while time_q and (now - time_q[0] > self.rate_window_seconds):
+            time_q.popleft()
+        while size_q and (now - size_q[0][0] > self.rate_window_seconds):
+            size_q.popleft()
+
+        raw_rate = float(len(time_q)) / self.rate_window_seconds
+        prev = self.ewma_rates[session_id]
         smoothed = self.ewma_alpha * raw_rate + (1.0 - self.ewma_alpha) * prev
         self.ewma_rates[session_id] = smoothed
-        return smoothed
+
+        sizes = [s for _, s in size_q]
+        packet_count_1s = len(sizes)
+        byte_count_1s = float(sum(sizes))
+        avg_pkt_size = float(byte_count_1s / packet_count_1s) if packet_count_1s > 0 else 0.0
+        pkt_size_std = float(np.std(sizes)) if packet_count_1s > 1 else 0.0
+
+        inter_arrival_std = 0.0
+        if len(time_q) > 2:
+            deltas = np.diff(np.array(time_q, dtype=float))
+            if len(deltas) > 1:
+                inter_arrival_std = float(np.std(deltas))
+
+        return {
+            "packet_rate_ewma": smoothed,
+            "packet_count_1s": packet_count_1s,
+            "byte_count_1s": byte_count_1s,
+            "avg_pkt_size": avg_pkt_size,
+            "pkt_size_std": pkt_size_std,
+            "inter_arrival_std": inter_arrival_std,
+        }
 
     def _update_session_stats(self, session_id, timestamp_str):
         s = self.session_stats[session_id]
@@ -467,42 +534,72 @@ class MonitorSwitch13(app_manager.RyuApp):
             return "ATTACK"
         return "NORMAL"
 
+    def _log_state_transition(self, src_ip, old_status, new_status, packet_rate):
+        if old_status == new_status:
+            return
+        if new_status == "WARNING":
+            self._warn(
+                f"STATE_TRANSITION | {src_ip} | {old_status}→WARN | "
+                f"rate={packet_rate:.2f}pps (20-50 pps range)"
+            )
+        elif new_status == "ATTACK_CONFIRMED":
+            self._alert(
+                f"STATE_TRANSITION | {src_ip} | {old_status}→ALERT | "
+                f"rate={packet_rate:.2f}pps (>{self.attack_rate_threshold} pps or SVM confirmed >{self.confirmation_seconds:.0f}s)"
+            )
+        elif new_status == "DROP_ACTIVE":
+            self._mitigation(
+                f"STATE_TRANSITION | {src_ip} | ALERT→DROP | mitigation_status=DROP_ACTIVE"
+            )
+        elif new_status == "NORMAL" and old_status == "DROP_ACTIVE":
+            self._release(
+                f"STATE_TRANSITION | {src_ip} | DROP→RELEASE | mitigation window ended"
+            )
+        elif new_status == "NORMAL":
+            self._info(
+                f"STATE_TRANSITION | {src_ip} | {old_status}→NORMAL | rate={packet_rate:.2f}pps (<20 pps)"
+            )
+
     # ══════════════════════════════════════════════════════════════════════
     # Detection state machine
     # ══════════════════════════════════════════════════════════════════════
 
-    def _update_detection_state(self, session_id, final_prediction, packet_rate, mitigation_active):
-        now   = time.time()
+    def _update_detection_state(self, session_id, src_ip, svm_prediction, packet_rate, mitigation_active):
+        now = time.time()
         state = self.session_detection_state[session_id]
+        old_status = state["status"]
         state["last_event_time"] = now
 
         if mitigation_active:
             state["status"] = "DROP_ACTIVE"
+            self._log_state_transition(src_ip, old_status, state["status"], packet_rate)
             return state
 
-        if final_prediction == 0:
-            if packet_rate >= self.warning_rate_threshold:
-                if state["warning_since"] is None:
-                    state["warning_since"] = now
-                state["status"] = "WARNING"
-            else:
-                state["status"]          = "NORMAL"
-                state["warning_since"]   = None
-                state["confirmed_since"] = None
-                state["alert_first_seen"] = None
-            return state
-
-        if state["warning_since"] is None:
+        warning_condition = packet_rate >= self.warning_rate_threshold
+        if warning_condition and state["warning_since"] is None:
             state["warning_since"] = now
 
-        elapsed = now - state["warning_since"]
-        if elapsed >= self.confirmation_seconds:
-            state["status"] = "ATTACK_CONFIRMED"
-            if state["confirmed_since"]  is None: state["confirmed_since"]  = now
-            if state["alert_first_seen"] is None: state["alert_first_seen"] = now
-        else:
-            state["status"] = "WARNING"
+        elapsed_warning = (now - state["warning_since"]) if state["warning_since"] else 0.0
+        alert_condition = (
+            packet_rate > self.attack_rate_threshold or
+            (svm_prediction == 1 and elapsed_warning >= self.confirmation_seconds)
+        )
 
+        if alert_condition:
+            state["status"] = "ATTACK_CONFIRMED"
+            if state["confirmed_since"] is None:
+                state["confirmed_since"] = now
+            if state["alert_first_seen"] is None:
+                state["alert_first_seen"] = now
+        elif warning_condition:
+            state["status"] = "WARNING"
+        else:
+            state["status"] = "NORMAL"
+            state["warning_since"] = None
+            state["confirmed_since"] = None
+            state["alert_first_seen"] = None
+
+        self._log_state_transition(src_ip, old_status, state["status"], packet_rate)
         return state
 
     def _should_activate_mitigation(self, session_id):
@@ -722,12 +819,14 @@ class MonitorSwitch13(app_manager.RyuApp):
             # Reset detection state agar re-arm bersih
             session_id = f"{src_ip}->{self.VICTIM_IP}:ICMP"
             ds = self.session_detection_state[session_id]
+            old_status = ds.get("status", "NORMAL")
             ds.update({
                 "status":          "NORMAL",
                 "warning_since":   None,
                 "confirmed_since": None,
                 "alert_first_seen": None,
             })
+            self._log_state_transition(src_ip, old_status, "NORMAL", 0.0)
 
             return "OFF"
 
@@ -743,6 +842,7 @@ class MonitorSwitch13(app_manager.RyuApp):
                  if not q or (now - q[-1]) > self._session_max_age]
         for sid in stale:
             self.session_packet_times.pop(sid, None)
+            self.session_packet_sizes.pop(sid, None)
             self.session_stats.pop(sid, None)
             self.session_detection_state.pop(sid, None)
             self.ewma_rates.pop(sid, None)
@@ -821,7 +921,11 @@ class MonitorSwitch13(app_manager.RyuApp):
                     ])
                     key = f"{proto}:{src_ip}->{dst_ip}:{dp}"
                     if self._should_log_baseline(key):
-                        self._info(f"{proto} NORMAL | {src_ip}:{sp or '-'} → {dst_ip}:{dp or '-'} | Risk=🟢5")
+                        self._info(
+                            f"NON-ICMP BASELINE | {proto} | "
+                            f"{src_ip}:{sp or '-'} → {dst_ip}:{dp or '-'} | "
+                            f"Logged to telemetry, excluded from ICMP SVM detection"
+                        )
             self._send_packet_out(datapath, msg, in_port, actions)
             return
 
@@ -833,8 +937,10 @@ class MonitorSwitch13(app_manager.RyuApp):
         src_ip = ip_pkt.src
         dst_ip = ip_pkt.dst
 
-        session_id  = self._get_session_id(src_ip, dst_ip, "ICMP")
-        packet_rate = self._get_packet_rate(session_id)
+        packet_size = len(msg.data) if msg.data is not None else 0
+        session_id = self._get_session_id(src_ip, dst_ip, "ICMP")
+        packet_features = self._get_icmp_window_features(session_id, packet_size)
+        packet_rate = packet_features["packet_rate_ewma"]
         timestamp   = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         session     = self._update_session_stats(session_id, timestamp)
         packet_count = session["packet_count"]
@@ -896,19 +1002,12 @@ class MonitorSwitch13(app_manager.RyuApp):
             return
 
         # ── Attacker traffic ke victim ────────────────────────────────────
-        features_df      = self._build_feature_dataframe(
-            dpid=dpid, src_mac=src_mac, dst_mac=dst_mac,
-            src_ip=src_ip, dst_ip=dst_ip,
-            eth_type=eth.ethertype, ip_proto=ip_pkt.proto,
-            icmp_type=icmp_pkt.type, in_port=in_port,
-            out_port=out_port if isinstance(out_port, int) else 0,
-            packet_rate=packet_rate,
-        )
+        features_df = self._build_feature_dataframe(dst_ip=dst_ip, packet_features=packet_features)
         svm_prediction   = self._predict_traffic(features_df)
         final_prediction = self._apply_prediction_guard(svm_prediction, packet_rate)
 
-        detection_state  = self._update_detection_state(
-            session_id, final_prediction, packet_rate, mitigation_active)
+        detection_state = self._update_detection_state(
+            session_id, src_ip, final_prediction, packet_rate, mitigation_active)
         detection_status = detection_state["status"]
 
         # Tentukan severity, event_type, event_note, phase
@@ -937,7 +1036,10 @@ class MonitorSwitch13(app_manager.RyuApp):
             event_note = "normal_icmp_to_victim"
             phase      = "NORMAL"
 
-        threat_score     = self._calculate_threat_score(packet_rate, final_prediction_log)
+        # Saat DROP_ACTIVE, rate attacker dipaksa 0 agar grafik menampilkan
+        # "cliff down" mitigasi secara eksplisit pada CSV telemetry.
+        logged_packet_rate = 0.0 if mitigation_active else packet_rate
+        threat_score = self._calculate_threat_score(logged_packet_rate, final_prediction_log)
         risk_emoji       = self._get_risk_emoji(threat_score)
         attack_type      = self._get_attack_type("ICMP", final_prediction_log, mitigation_active)
         attacker_segment = self._get_attacker_segment(src_ip)
@@ -960,7 +1062,7 @@ class MonitorSwitch13(app_manager.RyuApp):
                 src_ip, dst_ip, "", "",
                 src_mac, dst_mac, dpid, dpid_name,
                 in_port, out_port if isinstance(out_port, int) else 0,
-                round(packet_rate, 4), packet_count,
+                round(logged_packet_rate, 4), packet_count,
                 threat_score, attack_type, final_prediction_log,
                 attacker_segment, event_note,
             ])
@@ -981,7 +1083,7 @@ class MonitorSwitch13(app_manager.RyuApp):
                 status_txt = f"MITIGATING_IN_{countdown}s" if countdown > 0 else "ACTIVATING_DROP"
                 self._alert(
                     f"ICMP FLOOD | {src_ip} → {dst_ip} | "
-                    f"{packet_rate:.2f}pps | Risk={risk_emoji}{threat_score} | "
+                    f"{logged_packet_rate:.2f}pps | Risk={risk_emoji}{threat_score} | "
                     f"Pkts={packet_count} | {status_txt}"
                 )
 
@@ -993,7 +1095,7 @@ class MonitorSwitch13(app_manager.RyuApp):
                 ratio = packet_rate / self.warning_rate_threshold
                 self._warn(
                     f"ICMP SUSPECT | {src_ip} → {dst_ip} | "
-                    f"{packet_rate:.2f}pps | Ratio={ratio:.1f}x | "
+                    f"{logged_packet_rate:.2f}pps | Ratio={ratio:.1f}x | "
                     f"Risk={risk_emoji}{threat_score} | MONITORING"
                 )
 
@@ -1001,7 +1103,7 @@ class MonitorSwitch13(app_manager.RyuApp):
             if self._should_log_info(f"ICMP:{src_ip}->{dst_ip}"):
                 self._info(
                     f"ICMP NORMAL | {src_ip} → {dst_ip} | "
-                    f"{packet_rate:.2f}pps | Risk={risk_emoji}{threat_score}"
+                    f"{logged_packet_rate:.2f}pps | Risk={risk_emoji}{threat_score}"
                 )
 
         self._send_packet_out(datapath, msg, in_port, actions)

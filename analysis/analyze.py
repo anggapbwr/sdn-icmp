@@ -37,7 +37,8 @@ import pandas as pd
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 
-BASE_DIR     = "/home/kali/sdn-icmp"
+_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+BASE_DIR = "/home/kali/sdn-icmp" if os.path.isdir("/home/kali/sdn-icmp") else _repo_root
 BASELINE_CSV = f"{BASE_DIR}/logs/archive/baseline/traffic_analysis.csv"
 DDOS_CSV     = f"{BASE_DIR}/logs/archive/ddos/traffic_analysis.csv"
 MITIGATION_CSV = f"{BASE_DIR}/logs/archive/ddos/mitigation_events.csv"
@@ -150,6 +151,33 @@ def attacker_label(ip):
     m = ATTACKERS.get(ip, {})
     return f"{m.get('host', ip)} ({ip})" if m else ip
 
+def phase_segments(df):
+    if df.empty or "timestamp" not in df.columns or "phase" not in df.columns:
+        return []
+    phased = (
+        df.dropna(subset=["timestamp"])
+          .sort_values("timestamp")[["timestamp", "phase"]]
+          .copy()
+    )
+    if phased.empty:
+        return []
+
+    segments = []
+    current_phase = str(phased.iloc[0]["phase"]).strip().upper() or "NORMAL"
+    start_time = phased.iloc[0]["timestamp"]
+    last_time = start_time
+
+    for _, row in phased.iloc[1:].iterrows():
+        t = row["timestamp"]
+        p = str(row["phase"]).strip().upper() or "NORMAL"
+        if p != current_phase:
+            segments.append((current_phase, start_time, t))
+            current_phase = p
+            start_time = t
+        last_time = t
+    segments.append((current_phase, start_time, last_time))
+    return segments
+
 # ─── Load & prep ──────────────────────────────────────────────────────────────
 
 print("\n" + "=" * 60)
@@ -240,19 +268,17 @@ def graph_01():
 
     fig, ax = plt.subplots(figsize=(15, 7))
 
-    # Background phase bands dari baseline_victim_df (ikut phase column)
-    # Gambar shade berdasarkan waktu mitigasi pertama & release
-    if mitigation_times:
-        mit_start = min(mitigation_times.values())
-        # Shade ATTACK phase (sebelum mitigasi)
-        all_times = attack_df["timestamp"].dropna()
-        if not all_times.empty:
-            ax.axvspan(all_times.min(), mit_start,
-                       alpha=0.07, color=PALETTE["attack"], label="_nolegend_")
-        # Shade MITIGATED phase
-        mit_end = mit_start + pd.Timedelta(seconds=60)
-        ax.axvspan(mit_start, mit_end,
-                   alpha=0.07, color=PALETTE["mitigated"], label="_nolegend_")
+    # Background phase bands berdasarkan kolom `phase` dari telemetry CSV
+    for phase_name, start_t, end_t in phase_segments(ddos_df):
+        if start_t == end_t:
+            end_t = start_t + pd.Timedelta(milliseconds=500)
+        ax.axvspan(
+            start_t,
+            end_t,
+            alpha=0.07,
+            color=PHASE_COLORS.get(phase_name, PALETTE["normal"]),
+            label="_nolegend_",
+        )
 
     # Plot baseline ICMP ke victim (host normal)
     if not baseline_victim_df.empty and "timestamp" in baseline_victim_df.columns:

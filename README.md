@@ -502,3 +502,34 @@ a
 sudo apt install hping3 iperf tshark -y
 pip install ryu matplotlib pandas numpy joblib scikit-learn --break-system-packages
 ```
+
+---
+
+## TRAINING SVM (ICMP FEATURES ONLY)
+
+Model deteksi ICMP flood sekarang dilatih dari:
+- `data/raw/feature_dataset_normal.csv`
+- `data/raw/feature_dataset_attack.csv`
+
+Fitur yang dipakai (khusus ICMP):
+- `is_to_victim`
+- `packet_rate_ewma`
+- `packet_count_1s`
+- `byte_count_1s`
+- `avg_pkt_size`
+- `pkt_size_std`
+- `inter_arrival_std`
+
+Jalankan:
+
+```bash
+cd /home/kali/sdn-icmp
+python3 training/svm_train.py
+```
+
+Output artifacts ke folder `models/`:
+- `svm_model.pkl`
+- `svm_scaler.pkl`
+- `svm_feature_names.pkl`
+
+Controller otomatis load ketiga file tersebut. TCP/UDP/HTTP tetap dicatat di CSV telemetry, tetapi tidak dipakai oleh model SVM ICMP flood.
