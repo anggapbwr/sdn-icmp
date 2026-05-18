@@ -1036,6 +1036,8 @@ class MonitorSwitch13(app_manager.RyuApp):
             event_note = "normal_icmp_to_victim"
             phase      = "NORMAL"
 
+        # Saat DROP_ACTIVE, rate attacker dipaksa 0 agar grafik menampilkan
+        # "cliff down" mitigasi secara eksplisit pada CSV telemetry.
         logged_packet_rate = 0.0 if mitigation_active else packet_rate
         threat_score = self._calculate_threat_score(logged_packet_rate, final_prediction_log)
         risk_emoji       = self._get_risk_emoji(threat_score)
