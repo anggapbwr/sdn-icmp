@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 
 from pathlib import Path
+from typing import Tuple
 
+import numpy as np  # ← PINDAHKAN KE SINI (atas)
 import joblib
 import pandas as pd
 from sklearn.metrics import classification_report, confusion_matrix
@@ -52,7 +54,7 @@ def _load_labeled_dataset(base_dir: Path) -> pd.DataFrame:
     return pd.concat([normal_df, attack_df], ignore_index=True)
 
 
-def _prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
+def _prepare_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
     missing_features = [f for f in FEATURE_COLUMNS if f not in df.columns]
     if missing_features:
         raise ValueError(
@@ -96,6 +98,8 @@ def main() -> None:
 
     model = SVC(kernel="rbf", C=10.0, gamma="scale", random_state=42)
     model.fit(X_train_scaled, y_train)
+
+    model.feature_names_in_ = np.array(FEATURE_COLUMNS)
 
     y_pred = model.predict(X_test_scaled)
     cm = confusion_matrix(y_test, y_pred)

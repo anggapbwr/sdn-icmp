@@ -1,0 +1,1 @@
+timestamp,severity,event_type,detection_status,mitigation_status,phase,session_id,protocol_name,src_ip,dst_ip,src_port,dst_port,src_mac,dst_mac,dpid,dpid_name,in_port,out_port,packet_rate,packet_count,threat_score,attack_type,final_prediction,attacker_segment,event_note

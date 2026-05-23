@@ -1,0 +1,5 @@
+timestamp,src_ip,attacker_hostname,dpid,dpid_name,segment_description,action,reason,idle_timeout,hard_timeout,note
+2026-05-21 00:29:51.147745,10.0.0.1,h1,2,s2,s2-segment-attacker-h1,DROP_ICMP,ATTACK_CONFIRMED_DELAY_PASSED,0,300,DROP rule installed — ICMP + ARP from 10.0.0.1 blocked at switch level
+2026-05-21 00:30:04.338347,10.0.0.7,h7,3,s3,s3-segment-attacker-h7,DROP_ICMP,ATTACK_CONFIRMED_DELAY_PASSED,0,300,DROP rule installed — ICMP + ARP from 10.0.0.7 blocked at switch level
+2026-05-21 00:30:21.626488,10.0.0.13,h13,4,s4,s4-segment-attacker-h13,DROP_ICMP,ATTACK_CONFIRMED_DELAY_PASSED,0,300,DROP rule installed — ICMP + ARP from 10.0.0.13 blocked at switch level
+2026-05-21 00:30:30.578716,10.0.0.18,h18,5,s5,s5-segment-attacker-h18,DROP_ICMP,ATTACK_CONFIRMED_DELAY_PASSED,0,300,DROP rule installed — ICMP + ARP from 10.0.0.18 blocked at switch level

@@ -1,0 +1,21 @@
+SVM Training Report v2.1
+========================
+Generated: 2026-05-17 23:51:45
+
+Features (5): ['packet_rate_ewma', 'packet_count_1s', 'byte_count_1s', 'avg_pkt_size', 'inter_arrival_std']
+Dropped features (zero variance): ['pkt_size_std']
+
+Hyperparameters:
+  Kernel       : rbf
+  C            : 0.1
+  Gamma        : scale
+  class_weight : balanced
+  CV F1        : 1.0000 +/- 0.0000
+
+Test set: acc=1.0000 prec=1.0000 rec=1.0000 f1=1.0000
+CM: TN=755 FP=0 FN=0 TP=371
+
+Baseline best: thr=60 F1=1.0000
+Delta F1 SVM-baseline: +0.0000
+
+Verdict: WARNING - SVM SETARA baseline. Threshold sudah cukup.
