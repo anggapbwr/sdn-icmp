@@ -1,6 +1,6 @@
 # Baseline PCAP — Forensic Analysis Report
 
-**Generated:** 2026-05-21 22:55:07
+**Generated:** 2026-06-01 20:32:07
 **Data source:** `logs/archive/baseline/network_baseline.pcap`
 **Plane:** Data plane (raw packets, post-merge & dedup)
 
@@ -10,14 +10,14 @@
 
 | Item | Value |
 |------|-------|
-| File size | 0.25 MB |
-| Total packets | 2,419 |
-| Total bytes | 286,014 |
-| Duration | 136.88 seconds |
-| Start time | 2026-05-20 17:24:17 |
-| End time | 2026-05-20 17:26:34 |
-| Average rate | 17.67 pps |
-| Average packet size | 118.2 bytes |
+| File size | 0.31 MB |
+| Total packets | 2,937 |
+| Total bytes | 345,162 |
+| Duration | 222.06 seconds |
+| Start time | 2026-05-31 15:43:20 |
+| End time | 2026-05-31 15:47:02 |
+| Average rate | 13.23 pps |
+| Average packet size | 117.5 bytes |
 | Unique source IPs | 25 |
 | Unique destination IPs | 25 |
 
@@ -29,9 +29,9 @@ PCAP menunjukkan variasi protokol yang konsisten dengan baseline scenario yang d
 
 | Protocol | Packets | Percentage |
 |----------|---------|------------|
-| ICMP | 1,382 | 57.1% |
-| ARP | 993 | 41.1% |
-| TCP | 44 | 1.8% |
+| ICMP | 1,830 | 62.3% |
+| ARP | 1,023 | 34.8% |
+| TCP | 84 | 2.9% |
 
 ![Protocol Breakdown](PB1_protocol_breakdown.png)
 
@@ -43,16 +43,16 @@ Top 10 source host paling aktif:
 
 | Source | Packets | Status |
 |--------|---------|--------|
-| `10.0.0.25` (h25) | 418 | ✅ normal |
-| `10.0.0.2` (h2) | 214 | ✅ normal |
-| `10.0.0.5` (h5) | 207 | ✅ normal |
-| `10.0.0.10` (h10) | 196 | ✅ normal |
-| `10.0.0.20` (h20) | 127 | ✅ normal |
-| `10.0.0.15` (h15) | 127 | ✅ normal |
-| `10.0.0.7` (h7) | 107 | ⚠️ future attacker |
-| `10.0.0.13` (h13) | 106 | ⚠️ future attacker |
-| `10.0.0.1` (h1) | 103 | ⚠️ future attacker |
-| `10.0.0.18` (h18) | 102 | ⚠️ future attacker |
+| `10.0.0.25` (h25) | 653 | ✅ normal |
+| `10.0.0.2` (h2) | 293 | ✅ normal |
+| `10.0.0.5` (h5) | 281 | ✅ normal |
+| `10.0.0.10` (h10) | 277 | ✅ normal |
+| `10.0.0.15` (h15) | 156 | ✅ normal |
+| `10.0.0.20` (h20) | 139 | ✅ normal |
+| `10.0.0.1` (h1) | 113 | ⚠️ future attacker |
+| `10.0.0.13` (h13) | 108 | ⚠️ future attacker |
+| `10.0.0.7` (h7) | 103 | ⚠️ future attacker |
+| `10.0.0.18` (h18) | 101 | ⚠️ future attacker |
 
 > **Bukti behavior normal**: Host yang nanti jadi attacker (`h1`, `h7`, `h13`, `h18`) di baseline ini menunjukkan paket count **proporsional** dengan host normal — tidak ada dominasi yang mencurigakan.
 
@@ -76,7 +76,7 @@ Distribusi ukuran paket konsisten dengan traffic mix normal:
 - **UDP**: bervariasi sesuai payload
 - **ARP**: 42 bytes (fixed size)
 
-Rata-rata ukuran paket: **118.2 bytes** (Median: **98 bytes**).
+Rata-rata ukuran paket: **117.5 bytes** (Median: **98 bytes**).
 
 ![Packet Size Distribution](PB4_packet_size_dist.png)
 
@@ -84,7 +84,7 @@ Rata-rata ukuran paket: **118.2 bytes** (Median: **98 bytes**).
 
 ## 6. Forensic Findings
 
-1. **Network baseline terbukti sehat dari sisi data plane** — 2,419 paket dengan rate stabil 17.67 pps
+1. **Network baseline terbukti sehat dari sisi data plane** — 2,937 paket dengan rate stabil 13.23 pps
 2. **Variasi protokol konsisten** — ICMP, ARP, TCP hadir sesuai skenario traffic mix
 3. **Tidak ada flood signature** — tidak ada host yang dominan dengan rate abnormal
 4. **Future attackers berperilaku normal** — h1, h7, h13, h18 paket count sebanding dengan normal hosts
@@ -96,7 +96,7 @@ Rata-rata ukuran paket: **118.2 bytes** (Median: **98 bytes**).
 
 | Klaim | Bukti CSV (control plane) | Bukti PCAP (data plane) |
 |-------|---------------------------|-------------------------|
-| Network sehat | 100% NORMAL state | Rate 17.67 pps, no flood |
+| Network sehat | 100% NORMAL state | Rate 13.23 pps, no flood |
 | Variasi traffic | Multi-protocol di CSV | 3 protokol di PCAP |
 | No false positive | 0 WARNING/ATTACK | No abnormal rate spike |
 

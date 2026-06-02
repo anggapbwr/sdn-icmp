@@ -1,6 +1,6 @@
 # DDoS PCAP — Forensic Analysis Report
 
-**Generated:** 2026-05-21 22:55:23
+**Generated:** 2026-06-01 20:32:15
 **Data source:** `network_ddos.pcap` (raw) + `network_ddos_clean.pcap` (filtered)
 **Plane:** Data plane (raw packets, post-merge & dedup)
 
@@ -10,10 +10,10 @@
 
 | Item | Raw PCAP | Clean PCAP |
 |------|---------:|-----------:|
-| Total packets | 93,079 | 22,555 |
-| Duration | 168.63 seconds | — |
-| Start time | 2026-05-20 17:28:17 | — |
-| End time | 2026-05-20 17:31:05 | — |
+| Total packets | 79,963 | 21,311 |
+| Duration | 186.28 seconds | — |
+| Start time | 2026-05-31 15:48:45 | — |
+| End time | 2026-05-31 15:51:51 | — |
 | Mitigation events | 4 | — |
 
 > **Clean PCAP:** dibuat otomatis oleh `stop_capture.sh` dengan filter tshark — buang paket ICMP attacker→victim yang timestamp-nya ≥ drop timestamp di `mitigation_events.csv`. Ini merepresentasikan **apa yang seharusnya sampai victim** sesuai logic mitigasi switch.
@@ -24,8 +24,8 @@
 
 | Protocol | Packets (Raw) | Percentage |
 |----------|--------------:|-----------:|
-| ICMP | 91,826 | 98.7% |
-| ARP | 1,253 | 1.3% |
+| ICMP | 78,677 | 98.4% |
+| ARP | 1,286 | 1.6% |
 
 ICMP dominan karena 4 attacker melakukan flood. TCP/UDP/ARP tetap hadir karena background baseline traffic.
 
@@ -36,10 +36,10 @@ ICMP dominan karena 4 attacker melakukan flood. TCP/UDP/ARP tetap hadir karena b
 
 | Metric | Raw PCAP | Clean PCAP | Difference |
 |--------|---------:|-----------:|----------:|
-| Total packets | 93,079 | 22,555 | -70,524 (75.8%) |
-| ICMP packets | 91,826 | 21,302 | -70,524 |
+| Total packets | 79,963 | 21,311 | -58,652 (73.3%) |
+| ICMP packets | 78,677 | 20,025 | -58,652 |
 
-**Interpretasi:** Clean PCAP membuang **70,524 paket** yang merupakan paket attacker setelah drop timestamp.
+**Interpretasi:** Clean PCAP membuang **58,652 paket** yang merupakan paket attacker setelah drop timestamp.
 Paket ini tertangkap di host-side capture tapi tidak akan diteruskan ke victim oleh switch
 (switch drop di edge sebelum sampai victim).
 
@@ -52,16 +52,16 @@ Top 10 source host paling aktif:
 
 | Source | Packets | Percentage | Status |
 |--------|--------:|-----------:|--------|
-| `10.0.0.1` (h1) | 26,922 | 28.9% | ⚠️ **ATTACKER** |
-| `10.0.0.7` (h7) | 26,161 | 28.1% | ⚠️ **ATTACKER** |
-| `10.0.0.13` (h13) | 19,212 | 20.6% | ⚠️ **ATTACKER** |
-| `10.0.0.18` (h18) | 15,757 | 16.9% | ⚠️ **ATTACKER** |
-| `10.0.0.25` (h25) | 2,806 | 3.0% | ✅ normal |
-| `10.0.0.2` (h2) | 327 | 0.4% | ✅ normal |
-| `10.0.0.5` (h5) | 316 | 0.3% | ✅ normal |
-| `10.0.0.20` (h20) | 302 | 0.3% | ✅ normal |
-| `10.0.0.11` (h11) | 177 | 0.2% | ✅ normal |
-| `10.0.0.16` (h16) | 171 | 0.2% | ✅ normal |
+| `10.0.0.1` (h1) | 22,173 | 27.7% | ⚠️ **ATTACKER** |
+| `10.0.0.7` (h7) | 18,099 | 22.6% | ⚠️ **ATTACKER** |
+| `10.0.0.13` (h13) | 18,095 | 22.6% | ⚠️ **ATTACKER** |
+| `10.0.0.18` (h18) | 17,093 | 21.4% | ⚠️ **ATTACKER** |
+| `10.0.0.25` (h25) | 2,180 | 2.7% | ✅ normal |
+| `10.0.0.2` (h2) | 343 | 0.4% | ✅ normal |
+| `10.0.0.5` (h5) | 332 | 0.4% | ✅ normal |
+| `10.0.0.20` (h20) | 312 | 0.4% | ✅ normal |
+| `10.0.0.11` (h11) | 199 | 0.2% | ✅ normal |
+| `10.0.0.16` (h16) | 187 | 0.2% | ✅ normal |
 
 > Bukti **attacker mendominasi traffic volume** — packet count attacker secara signifikan lebih besar dari normal host, konsisten dengan hping3 flood (1000 pps target rate).
 
@@ -91,10 +91,10 @@ Grafik di bawah membandingkan **rate attacker** vs **rate baseline traffic** sep
 
 | Attacker | Total ICMP→Victim | Pre-Drop (sampai victim) | Post-Drop (di-block) | Drop Time |
 |----------|------------------:|-------------------------:|---------------------:|----------:|
-| `10.0.0.1` (h1) | 26,779 | 26,779 | 0 | 00:29:51 |
-| `10.0.0.7` (h7) | 26,031 | 26,031 | 0 | 00:30:04 |
-| `10.0.0.13` (h13) | 19,085 | 19,085 | 0 | 00:30:21 |
-| `10.0.0.18` (h18) | 15,621 | 15,621 | 0 | 00:30:30 |
+| `10.0.0.1` (h1) | 22,029 | 22,029 | 0 | 22:50:38 |
+| `10.0.0.7` (h7) | 17,948 | 17,948 | 0 | 22:50:46 |
+| `10.0.0.13` (h13) | 17,950 | 17,950 | 0 | 22:50:55 |
+| `10.0.0.18` (h18) | 16,963 | 16,963 | 0 | 22:51:06 |
 
 > **Pre-drop count** = paket attacker yang sampai victim sebelum drop terpasang
 > **Post-drop count** = paket attacker yang ter-capture di host tapi tidak sampai victim (di-drop switch)
@@ -119,7 +119,7 @@ Tampak jelas bahwa setiap attacker mengalami **rate drop drastis** tepat setelah
 2. **Cliff effect terbukti** — rate attacker turun drastis setelah drop time
 3. **Selektivitas terkonfirmasi** — baseline traffic tetap mengalir di pcap
 4. **Cross-validation dengan CSV controller** — timestamp drop di PCAP konsisten dengan `mitigation_events.csv`
-5. **Total paket attacker pre-drop**: 87,516 (paket yang sampai victim sebelum drop)
+5. **Total paket attacker pre-drop**: 74,890 (paket yang sampai victim sebelum drop)
 6. **Total paket attacker post-drop**: 0 (paket yang di-block oleh switch sesuai drop rule)
 
 ---

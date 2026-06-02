@@ -1,6 +1,6 @@
 # SDN ICMP Flood Mitigation — Comparison Report
 
-**Generated:** 2026-05-21 15:28:08
+**Generated:** 2026-06-01 20:32:01
 **Scope:** Side-by-side analysis: Baseline scenario vs DDoS scenario
 
 ---
@@ -16,13 +16,13 @@ Eksperimen ini menggunakan **dua skenario** untuk memvalidasi sistem deteksi & m
 
 | Metric | Baseline | DDoS | Δ Change |
 |--------|----------|------|---------:|
-| Total events | 2,727 | 7,887 | +189.2% |
-| Duration | 136.7s | 169.1s | — |
-| Avg packet rate | 1.63 pps | 72.60 pps | **44.5×** |
-| Max packet rate | 8.71 pps | 181.08 pps | **20.8×** |
+| Total events | 3,520 | 7,172 | +103.8% |
+| Duration | 222.0s | 186.7s | — |
+| Avg packet rate | 1.94 pps | 50.77 pps | **26.2×** |
+| Max packet rate | 10.69 pps | 172.13 pps | **16.1×** |
 | Unique sources | 25 | 25 | — |
-| WARNING events | 0 | 289 | — |
-| ATTACK_CONFIRMED | 0 | 4,015 | — |
+| WARNING events | 0 | 233 | — |
+| ATTACK_CONFIRMED | 0 | 3,073 | — |
 | Mitigation actions | 0 | 4 | — |
 
 ---
@@ -50,16 +50,16 @@ Baseline scenario menunjukkan **variasi protokol yang sehat** (ICMP, TCP, UDP, A
 
 | Protocol | Baseline | DDoS | Catatan |
 |----------|---------:|-----:|---------|
-| ICMP | 2,608 | 7,887 | ↑ Spike karena flood |
-| TCP | 13 | 0 |  |
-| UDP | 106 | 0 |  |
+| ICMP | 3,385 | 7,172 | ↑ Spike karena flood |
+| TCP | 24 | 0 |  |
+| UDP | 111 | 0 |  |
 
 
 ---
 
 ## 3. Packet Rate Comparison
 
-DDoS menghasilkan traffic **20.8× lebih besar** (max rate) dan **44.5× lebih besar** (avg rate) dibanding baseline. Ini secara signifikan melampaui threshold deteksi.
+DDoS menghasilkan traffic **16.1× lebih besar** (max rate) dan **26.2× lebih besar** (avg rate) dibanding baseline. Ini secara signifikan melampaui threshold deteksi.
 
 ![Packet Rate Comparison](C2_packet_rate_comparison.png)
 
@@ -80,10 +80,10 @@ DDoS menghasilkan traffic **20.8× lebih besar** (max rate) dan **44.5× lebih b
 
 | Time | Source IP | Switch | Action |
 |------|-----------|--------|--------|
-| 00:29:51 | `10.0.0.1` | s2 | DROP_ICMP |
-| 00:30:04 | `10.0.0.7` | s3 | DROP_ICMP |
-| 00:30:21 | `10.0.0.13` | s4 | DROP_ICMP |
-| 00:30:30 | `10.0.0.18` | s5 | DROP_ICMP |
+| 22:50:38 | `10.0.0.1` | s2 | DROP_ICMP |
+| 22:50:46 | `10.0.0.7` | s3 | DROP_ICMP |
+| 22:50:55 | `10.0.0.13` | s4 | DROP_ICMP |
+| 22:51:06 | `10.0.0.18` | s5 | DROP_ICMP |
 
 **Karakteristik mitigasi:**
 - Drop terpasang di **edge switch** (di switch attacker, bukan di switch victim) → traffic attacker tidak melewati core network
@@ -121,8 +121,8 @@ Embed grafik DDoS:
 
 | Klaim | Bukti (data) | Status |
 |-------|--------------|--------|
-| Sistem deteksi tidak false-positive | Baseline 100% NORMAL (2,727 events) | ✅ |
-| Sistem mendeteksi ICMP flood | 289 WARNING + 4,015 ATTACK_CONFIRMED di DDoS | ✅ |
+| Sistem deteksi tidak false-positive | Baseline 100% NORMAL (3,520 events) | ✅ |
+| Sistem mendeteksi ICMP flood | 233 WARNING + 3,073 ATTACK_CONFIRMED di DDoS | ✅ |
 | Mitigasi terpasang otomatis | 4 drop rule tercatat di `mitigation_events.csv` | ✅ |
 | Drop rule efektif (no bypass) | 0 PacketIn attacker→victim di CSV setelah drop timestamp | ✅ |
 | Selektivitas src-IP | Baseline traffic tetap mengalir saat `phase=MITIGATED` | ✅ |
