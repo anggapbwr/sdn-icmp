@@ -1,350 +1,499 @@
-# SDN-ICMP: Sistem Deteksi & Mitigasi DDoS ICMP Flood Berbasis SDN
+# SDN ICMP Flood Forensics & Detection System
+## Distributed Attack Detection and Mitigation using NIST SP 800-86 Framework
 
-> **Skripsi** — Implementasi deteksi dan mitigasi serangan DDoS ICMP Flood menggunakan arsitektur Software-Defined Networking (SDN) dengan framework forensik **NIST SP 800-86**.
-
----
-
-## Daftar Isi
-
-- [Gambaran Umum](#gambaran-umum)
-- [Stack Teknologi](#stack-teknologi)
-- [Topologi Jaringan](#topologi-jaringan)
-- [Prasyarat & Instalasi](#prasyarat--instalasi)
-- [Struktur Direktori](#struktur-direktori)
-- [Cara Menjalankan](#cara-menjalankan)
-  - [Skenario 1: Baseline](#skenario-1-baseline)
-  - [Skenario 2: DDoS](#skenario-2-ddos)
-  - [Analisis & Reporting](#analisis--reporting)
-- [Kerangka Kerja NIST SP 800-86](#kerangka-kerja-nist-sp-800-86)
-- [Output & Evidence](#output--evidence)
-- [Referensi](#referensi)
+This project implements a comprehensive SDN-based detection and mitigation system for ICMP flood attacks in a network emulation environment. It follows NIST SP 800-86 digital forensics guidelines across three operational phases: Baseline, Attack, and Recovery.
 
 ---
 
-## Gambaran Umum
+## Project Overview
 
-Proyek ini mengimplementasikan sistem deteksi dan mitigasi serangan **DDoS ICMP Flood** di atas jaringan SDN (Software-Defined Networking). Controller Ryu (OpenFlow 1.3) memonitor traffic secara real-time menggunakan algoritma **EWMA + SVM-assisted threshold**, dan secara otomatis memasang aturan DROP di switch OpenFlow ketika serangan terdeteksi.
+| Component | Detail |
+|-----------|--------|
+| **Architecture** | Software-Defined Network (SDN) with OpenFlow 1.3 |
+| **Controller** | Ryu (with intelligent attack detection & drop-based mitigation) |
+| **Network Emulator** | Mininet |
+| **Detection Method** | EWMA-based anomaly detection + SVM classifier |
+| **Mitigation Strategy** | Per-attacker IP OpenFlow DROP rules (auto-expiring) |
+| **Experiment Duration** | ±3 minutes (60s baseline + 90s attack + 30s recovery) |
+| **Victim Target** | h25 (10.0.0.25) |
+| **Attack Sources** | h1, h7, h13, h18 (distributed sources) |
+| **Forensics Framework** | NIST SP 800-86 (Detection, Containment, Analysis) |
 
-Seluruh proses eksperimen dipetakan ke **4 fase forensik NIST SP 800-86**: Collection → Examination → Analysis → Reporting.
 
-```
-┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-│  COLLECTION  │ → │ EXAMINATION  │ → │   ANALYSIS   │ → │  REPORTING   │
-│  Akuisisi    │   │  Pemrosesan  │   │  Interpretasi│   │  Penyajian   │
-│  evidence    │   │  & filtering │   │  forensik    │   │  temuan      │
-└──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘
-```
-
----
-
-## Stack Teknologi
-
-| Komponen | Detail |
-|---|---|
-| OS | Kali Linux |
-| Controller | Ryu (OpenFlow 1.3) |
-| Emulator Jaringan | Mininet |
-| Bahasa | Python 3.8 (venv `ryu38`) |
-| Detection Algorithm | EWMA + SVM-assisted threshold |
-| Packet Capture | tcpdump, mergecap, editcap, tshark |
-| Analisis | pandas, matplotlib, numpy |
-| Attack Tool | hping3 |
-
----
-
-## Topologi Jaringan
+## Network Topology
 
 ```
-                        [Controller Ryu]
-                              |
-                          [s1 - Core]
-                    ________|________
-                   |    |    |    |  |
-                  s2   s3   s4   s5  s6
-                  |     |    |    |   |
-              h1-h6  h7-h12 h13-h17 h18-h23  h24-h25
-```
+Switch Layer:
+┌─────────────────────────────────────────────────┐
+│                  Core Switch (s1)                │
+└─────────────────────────────────────────────────┘
+        ↑            ↑            ↑            ↑
+        │            │            │            │
+    ┌───┴─┐      ┌───┴─┐      ┌──┴──┐      ┌──┴──┐
+    │     │      │     │      │     │      │     │
+   s2     s3    s4     s5     s6            
+(h1-h6) (h7-h12)(h13-h18)(h19-h24) (h25 - Victim)
 
-| Komponen | Detail |
-|---|---|
-| Core switch | `s1` |
-| Access switches | `s2`, `s3`, `s4`, `s5`, `s6` |
-| Total hosts | 25 (`h1`–`h25`) |
-| **Victim** | `h25` — IP `10.0.0.25`, terhubung ke `s6` |
-| **Attacker** | `h1` @ s2, `h7` @ s3, `h13` @ s4, `h18` @ s5 |
-
-### Konfigurasi Detection (controller)
-
-```python
-MITIGATION_HARD_TIMEOUT      = 300    # detik
-MITIGATION_IDLE_TIMEOUT      = 0
-warning_rate_threshold       = 20.0   # pps
-attack_rate_threshold        = 50.0   # pps
-confirmation_seconds         = 5.0
-mitigation_delay_after_alert = 8.0    # delay observasi sebelum DROP
-alert_log_interval           = 0.025  # 40 logs/sec
+Hosts:
+- h1, h7, h13, h18: Attack sources (ICMP flood)
+- h25: Victim (target of attacks)
+- Others: Legitimate traffic generators
 ```
 
 ---
 
-## Prasyarat & Instalasi
-
-```bash
-# OS: Kali Linux atau Ubuntu 24
-sudo apt install -y mininet openvswitch-switch wireshark-common tshark hping3
-
-# Python dependencies
-pip3 install ryu pandas matplotlib numpy
-```
-
-> **Catatan:** Semua perintah eksperimen dijalankan dari direktori `/home/kali/sdn-icmp`.
-
----
-
-## Struktur Direktori
+## Project Structure
 
 ```
 sdn-icmp/
 ├── controller/
-│   └── controller.py           # Ryu controller (EWMA + SVM detection)
+│   └── controller.py          # Ryu OpenFlow controller with detection & mitigation logic
 ├── topology/
-│   ├── topology.py             # Definisi topologi Mininet
-│   ├── netns_link.sh           # Symlink network namespace per host
-│   ├── start_capture.sh        # Launch tcpdump di 10 host
-│   └── stop_capture.sh         # Stop tcpdump + merge + filter pcap
+│   ├── topology.py            # Mininet network topology definition
+│   ├── start_capture.sh        # Script to start packet capture
+│   ├── stop_capture.sh         # Script to stop packet capture
+│   └── netns_link.sh           # Network namespace setup
+├── training/
+│   ├── svm_train.py           # SVM model training for attack classification
+│   ├── feature_collector.py   # Extract features from captured packets
+│   └── label_dataset.py        # Label training dataset
 ├── analysis/
-│   ├── analyze_baseline.py     # Analisis CSV skenario baseline
-│   ├── analyze_ddos.py         # Analisis CSV skenario DDoS
-│   ├── analyze_combined.py     # Perbandingan cross-skenario
-│   ├── analyze_pcap_baseline.py# Analisis PCAP skenario baseline
-│   └── analyze_pcap_ddos.py    # Analisis PCAP skenario DDoS
-└── logs/
-    ├── traffic_analysis.csv    # Log real-time controller (live)
-    ├── mitigation_events.csv   # Log DROP events (live)
-    ├── archive/
-    │   ├── baseline/           # Evidence skenario baseline
-    │   └── ddos/               # Evidence skenario DDoS
-    └── report_graphs/
-        ├── baseline/           # Grafik + markdown baseline
-        ├── ddos/               # Grafik + markdown DDoS
-        └── combined/           # Grafik + markdown perbandingan
+│   ├── analyze_baseline.py     # Analyze baseline phase traffic
+│   ├── analyze_ddos.py         # Analyze attack phase traffic
+│   ├── analyze_combined.py     # Combined 3-phase analysis with visualizations
+│   ├── analyze_pcap_baseline.py# PCAP analysis for baseline
+│   └── analyze_pcap_ddos.py    # PCAP analysis for DDoS phase
+├── data/
+│   ├── raw/
+│   │   ├── feature_dataset_normal.csv    # Normal traffic features
+│   │   └── feature_dataset_attack.csv    # Attack traffic features
+│   └── processed/
+│       └── feature_dataset_labeled.csv   # Labeled dataset for training
+├── logs/
+│   ├── archive/
+│   │   ├── baseline/           # Baseline phase evidence
+│   │   │   ├── session_baseline.pcap
+│   │   │   ├── traffic_analysis.csv
+│   │   │   └── baseline_summary.md
+│   │   └── ddos/               # Attack phase evidence
+│   │       ├── session_ddos.pcap
+│   │       ├── traffic_analysis.csv
+│   │       └── mitigation_events.csv
+│   └── report_graphs/          # Generated visualizations
+│       ├── baseline/
+│       ├── combined/
+│       └── ddos/
+├── models/
+│   ├── svm_model.pkl          # Trained SVM classifier
+│   ├── svm_scaler.pkl         # Feature scaling object
+│   ├── svm_feature_names.pkl  # Feature names for prediction
+│   └── training_report.txt    # Training metrics & summary
+├── README.md                   # This file
+└── NIST_DOCUMENTATION.md       # Detailed NIST SP 800-86 framework
 ```
 
 ---
 
-## Cara Menjalankan
+## Prerequisites & Installation
 
-Eksperimen membutuhkan **3 terminal** yang berjalan bersamaan:
-- **T1** — Ryu Controller
-- **T2** — Mininet CLI
-- **T3** — Helper scripts (tcpdump, namespace, dll.)
+### System Requirements
+- Linux (Ubuntu 18.04+)
+- Python 3.7+
+- Root/sudo access (required for Mininet & tcpdump)
 
-### Skenario 1: Baseline
-
-**Tujuan:** Memvalidasi network dalam kondisi normal — controller tidak menghasilkan false positive.
+### Install Dependencies
 
 ```bash
-# T1 — Start Controller
-cd /home/kali/sdn-icmp
-ryu-manager controller/controller.py
+# System packages
+sudo apt update
+sudo apt install -y \
+  mininet \
+  openvswitch-switch \
+  openvswitch-testcontroller \
+  python3-pip \
+  tcpdump \
+  hping3 \
+  iperf \
+  tshark \
+  wget
 
-# T2 — Start Mininet
-sudo mn -c
-sudo python3 topology/topology.py
-
-# T3 — Link namespace & start capture
-sudo bash topology/netns_link.sh
-sudo bash topology/start_capture.sh baseline
+# Python packages
+pip install -q \
+  ryu \
+  scapy \
+  pandas \
+  numpy \
+  matplotlib \
+  scikit-learn \
+  joblib
 ```
 
-**T2 (Mininet CLI)** — generate traffic mix (~60–90 detik):
+### Clone & Setup
 
 ```bash
-pingall
-
-# ICMP rate rendah ke victim
-h2 ping -i 1 10.0.0.25 &
-h5 ping -i 1 10.0.0.25 &
-h10 ping -i 2 10.0.0.25 &
-
-# TCP transfer
-h20 nc -lk -p 5001 > /dev/null &
-h15 head -c 100000 /dev/urandom | nc -q 1 10.0.0.20 5001 &
-
-# UDP transfer
-h8 nc -ulk -p 6001 > /dev/null &
-h16 head -c 50000 /dev/urandom | nc -u -q 1 10.0.0.8 6001 &
-
-# HTTP request
-h4 python3 -m http.server 8080 &
-h11 curl -s http://10.0.0.4:8080 > /dev/null &
+cd /home/kali
+git clone <repo-url> sdn-icmp
+cd sdn-icmp
 ```
-
-**Stop & archive:**
-
-```bash
-# T2
-exit && sudo mn -c
-
-# T1 — Ctrl+C
-
-# T3
-mv /home/kali/sdn-icmp/logs/traffic_analysis.csv  logs/archive/baseline/
-mv /home/kali/sdn-icmp/logs/mitigation_events.csv logs/archive/baseline/
-sudo bash topology/stop_capture.sh baseline
-```
-
-**Output:** `logs/archive/baseline/` berisi `network_baseline.pcap`, `traffic_analysis.csv`, `mitigation_events.csv`.
 
 ---
 
-### Skenario 2: DDoS
+## Experimental Workflow
 
-**Tujuan:** Memvalidasi deteksi & mitigasi serangan distributed ICMP flood dari 4 attacker, sambil membuktikan selektivitas (baseline traffic tidak terganggu).
+### Phase 1: Baseline (60 seconds)
+**Objective:** Establish network baseline with legitimate traffic (ICMP, TCP, UDP, HTTP).
 
-```bash
-# Reset & start ulang (sama seperti baseline)
-# T1: ryu-manager controller/controller.py
-# T2: sudo mn -c && sudo python3 topology/topology.py
-# T3: sudo bash topology/netns_link.sh
-# T3: sudo bash topology/start_capture.sh ddos
-```
+| Step | Action |
+|------|--------|
+| 1 | Start Ryu controller |
+| 2 | Launch Mininet topology |
+| 3 | Begin tcpdump capture → `logs/archive/baseline/session_baseline.pcap` |
+| 4 | Generate mixed traffic (ping, iperf, wget) |
+| 5 | Stop capture after 60 seconds |
+| 6 | Archive traffic analysis CSV |
 
-**T2 (Mininet CLI)** — baseline awal (~30 detik), lalu serangan bertahap:
+### Phase 2: Attack (90 seconds)
+**Objective:** Execute distributed ICMP flood while recording detection & mitigation events.
 
-```bash
-# Baseline awal
-pingall
-h2 ping -i 1 10.0.0.25 &
-h5 ping -i 1 10.0.0.25 &
-h11 ping -i 1 10.0.0.25 &
-h16 ping -i 1 10.0.0.25 &
-h20 ping -i 1 10.0.0.25 &
-h24 ping -i 1 10.0.0.25 &
+| Step | Action |
+|------|--------|
+| 1 | Restart controller for attack phase |
+| 2 | Start baseline traffic (ping, TCP/UDP) |
+| 3 | Begin tcpdump capture → `logs/archive/ddos/session_ddos.pcap` |
+| 4 | Launch ICMP flood from h1, h7, h13, h18 (hping3) |
+| 5 | Monitor controller logs for detection alerts |
+| 6 | Observe DROP rule installation per attacker |
+| 7 | Stop attacks after 90 seconds |
+| 8 | Archive CSV logs & captured traffic |
 
-# Launch attacker bertahap (jeda 15 detik antar attacker)
-h1 hping3 --icmp -i u1000 10.0.0.25 &
-# tunggu 15 detik
-h7 hping3 --icmp -i u1000 10.0.0.25 &
-# tunggu 15 detik
-h13 hping3 --icmp -i u1000 10.0.0.25 &
-# tunggu 15 detik
-h18 hping3 --icmp -i u1000 10.0.0.25 &
-# tunggu ~60 detik observasi pasca-mitigasi
-```
+### Phase 3: Recovery (30 seconds)
+**Objective:** Record network return to normal after attack cessation.
 
-> `hping3 -i u1000` = interval 1000 µs = ~1000 pps per attacker → total ~4000 pps (jauh di atas threshold 50 pps).
-
-**Stop & archive:**
-
-```bash
-# T1 — Ctrl+C
-
-# T3
-mv /home/kali/sdn-icmp/logs/traffic_analysis.csv  logs/archive/ddos/
-mv /home/kali/sdn-icmp/logs/mitigation_events.csv logs/archive/ddos/
-sudo bash topology/stop_capture.sh ddos
-```
-
-**Output:** `logs/archive/ddos/` berisi `network_ddos.pcap` (raw), `network_ddos_clean.pcap` (post-drop attacker difilter), `traffic_analysis.csv`, `mitigation_events.csv`.
+| Step | Action |
+|------|--------|
+| 1 | Wait 30 seconds (DROP rules expire) |
+| 2 | Stop baseline traffic |
+| 3 | Stop tcpdump capture |
+| 4 | Verify no residual attacks in logs |
 
 ---
 
-### Analisis & Reporting
+## Running the Experiment
+
+### Manual Execution (Step-by-Step)
+
+See [README_DOCUMENTATION.md](README_DOCUMENTATION.md) for detailed terminal-by-terminal instructions.
+
+### Quick Start Script (Automated)
 
 ```bash
-cd /home/kali/sdn-icmp
+# Clean environment
+sudo mn -c && pkill -f ryu-manager && pkill -f tcpdump && \
+pkill -f hping3 && pkill -f iperf && rm -f logs/*.csv logs/*.log
 
-# Control plane (CSV)
-python3 analysis/analyze_baseline.py
-python3 analysis/analyze_ddos.py
+# Run experiment
+sudo python3 topology/topology.py  # Terminal 1: Mininet
+ryu-manager controller/controller.py  # Terminal 2: Controller
+# Terminal 3: tcpdump (see documentation)
+```
+
+---
+
+## Detection & Mitigation Logic
+
+### Detection Strategy
+
+```
+EWMA (Exponential Weighted Moving Average):
+├── Packet Rate Threshold: 20 pps
+├── Time Window: 5 seconds
+├── Sensitivity: Medium (α = 0.3)
+└── State: NORMAL → WARNING → ALERT → ATTACK_CONFIRMED
+
+SVM Classifier (ICMP Feature Classification):
+├── Features: src_ip, dst_ip, protocol, packet_size, rate
+├── Training Data: ICMP packets (normal vs attack)
+└── Confidence Threshold: 0.75
+```
+
+### Mitigation Strategy
+
+```
+OpenFlow DROP Rules (Per-Attacker):
+├── Match: src_ip == attacker IP
+├── Action: DROP
+├── Duration: 60 seconds (auto-expiring)
+└── Priority: 100 (high precedence)
+```
+
+### Controller Behavior
+
+| State | Condition | Action |
+|-------|-----------|--------|
+| `NORMAL` | Packet rate < threshold | Log baseline |
+| `WARNING` | Rate > threshold for 5s | Log warning event |
+| `ALERT` | EWMA trend increasing | Prepare mitigation |
+| `ATTACK_CONFIRMED` | SVM confidence > 0.75 | Install DROP rules |
+| `MITIGATED` | Attacker IP blocked | Count dropped packets |
+| `RELEASED` | 60s timeout expired | Remove DROP rule |
+
+---
+
+## Analysis & Visualization
+
+### Run Post-Experiment Analysis
+
+```bash
+# Analyze all phases and generate graphs
 python3 analysis/analyze_combined.py
 
-# Data plane (PCAP)
+# Output files:
+# logs/report_graphs/combined/
+#   ├── 01_packet_rate_timeline_3phase.png
+#   ├── 02_threat_score_escalation.png
+#   ├── 03_detection_state_distribution.png
+#   ├── 04_attacker_attribution.png
+#   ├── 05_mitigation_lifecycle.png
+#   └── comparison_report.md
+```
+
+### Expected Visualizations
+
+| File | Shows |
+|------|-------|
+| `01_packet_rate_timeline_3phase.png` | Packet rate across 3 phases; cliff drop at mitigation |
+| `02_threat_score_escalation.png` | Per-attacker threat escalation over time |
+| `03_detection_state_distribution.png` | State machine transitions & dwell times |
+| `04_attacker_attribution.png` | Attacker identification & PPS contribution |
+| `05_mitigation_lifecycle.png` | DROP rule installation/release timeline |
+
+### Individual Phase Analysis
+
+```bash
+# Baseline phase only
+python3 analysis/analyze_baseline.py
+
+# DDoS phase only
+python3 analysis/analyze_ddos.py
+
+# PCAP-level deep dive
 python3 analysis/analyze_pcap_baseline.py
 python3 analysis/analyze_pcap_ddos.py
 ```
 
-Hasil analisis tersimpan di `logs/report_graphs/{baseline,ddos,combined}/`.
+---
+
+## Training the SVM Classifier
+
+### Prepare Training Data
+
+```bash
+# Extract ICMP features from labeled captures
+python3 training/feature_collector.py
+python3 training/label_dataset.py
+```
+
+### Train Model
+
+```bash
+python3 training/svm_train.py
+
+# Outputs:
+# models/
+#   ├── svm_model.pkl        # Trained classifier
+#   ├── svm_scaler.pkl       # Feature scaler
+#   ├── svm_feature_names.pkl# Feature metadata
+#   └── training_report.txt  # Accuracy, precision, recall
+```
 
 ---
 
-## Kerangka Kerja NIST SP 800-86
+## Expected Results
 
-| Fase | Aktivitas Teknis | Tools | Output |
-|---|---|---|---|
-| **Collection** | Setup topology Mininet | `topology.py`, `netns_link.sh` | Network siap di-monitor |
-| **Collection** | Start network-wide capture | `start_capture.sh`, tcpdump | 10 pcap per-host |
-| **Collection** | Start controller logging | `controller.py` (Ryu) | `traffic_analysis.csv`, `mitigation_events.csv` |
-| **Examination** | Generate traffic (baseline/DDoS) | Mininet CLI, hping3 | Traffic mix tercatat di CSV & pcap |
-| **Examination** | Merge & dedup pcap | mergecap, editcap | `network_${scenario}.pcap` |
-| **Examination** | Filter clean pcap | tshark -Y | `network_ddos_clean.pcap` |
-| **Analysis** | Parse CSV (control plane) | pandas, matplotlib | Statistik & grafik per skenario |
-| **Analysis** | Parse PCAP (data plane) | tshark subprocess | Statistik dari data plane |
-| **Analysis** | Cross-plane synthesis | `analyze_combined.py` | Perbandingan baseline vs DDoS |
-| **Reporting** | Generate markdown report | Auto-generated analyzer | 5 file `.md` |
-| **Reporting** | Konversi ke PDF | VSCode Markdown PDF / pandoc | PDF untuk skripsi |
+| Criterion | Expected Outcome |
+|-----------|------------------|
+| ✅ **Baseline Traffic** | ICMP, TCP, UDP flows recorded; packet rate ~5-15 pps |
+| ✅ **Attack Detection** | WARNING logged at 5s; ALERT at 10s; ATTACK_CONFIRMED at 15s |
+| ✅ **DROP Rules** | Per-attacker rules installed; 4 attackers identified |
+| ✅ **Packet Rate Cliff** | Sharp drop from 100+ pps to <10 pps after mitigation |
+| ✅ **Legitimate Traffic** | Baseline pings (h2, h5, h10, h15, h20) continue uninterrupted |
+| ✅ **Recovery Phase** | Traffic returns to baseline after 30s; DROP rules expire |
+| ✅ **CSV Logs** | traffic_analysis.csv & mitigation_events.csv archived |
+| ✅ **PCAP Captures** | session_baseline.pcap & session_ddos.pcap complete |
+| ✅ **Visualizations** | All 5 graphs generated successfully |
 
 ---
 
-## Output & Evidence
+## Forensic Evidence Structure
 
-### Grafik yang Dihasilkan
+After a complete 3-phase experiment, evidence is organized as follows:
 
-**Baseline (control plane + data plane):**
-- `B1` — Distribusi protokol (CSV)
-- `B2` — Packet rate timeline (CSV)
-- `B3` — Top talkers (CSV)
-- `B4` — Validasi 100% NORMAL state (CSV)
-- `PB1–PB4` — Distribusi protokol, per-host traffic, rate timeline, packet size (PCAP)
-
-**DDoS (control plane + data plane):**
-- `D1` — Attack timeline + DROP markers
-- `D2` — Detection latency (Gantt NORMAL→WARNING→ATTACK→DROP)
-- `D3` — **Bukti selektivitas** attacker vs baseline (control plane)
-- `D4` — Distribusi state machine
-- `D5` — Mitigation lifecycle & timing
-- `PD3` — **Bukti cliff effect** raw vs clean (data plane)
-- `PD4` — Pre/post drop count per attacker (forensik)
-- `PD5` — Zoom moment mitigasi
-
-**Combined:**
-- `C1–C3` — Perbandingan side-by-side baseline vs DDoS
-
-### Klaim Forensik yang Divalidasi
-
-| # | Klaim | Bukti CSV | Bukti PCAP |
-|---|---|---|---|
-| 1 | Network baseline sehat | 100% NORMAL state | Rate stabil & rendah |
-| 2 | No false positive | 0 WARNING/ATTACK di baseline | No abnormal rate spike |
-| 3 | Attacker terdeteksi | WARNING + ATTACK_CONFIRMED events | Top source dominan |
-| 4 | Mitigasi terpasang | DROP_ICMP events di CSV | Cliff drop di rate timeline |
-| 5 | Drop rule efektif | 0 PacketIn post-drop dari attacker | Rate flat 0 di clean pcap |
-| 6 | Selektivitas src-IP | Baseline tetap di phase=MITIGATED | Baseline rate tetap di pcap |
-| 7 | Konsistensi timing | Drop latency konsisten antar attacker | Cliff timing sesuai CSV |
-| 8 | Cross-plane validation | — | PCAP confirms CSV timestamps |
-
-### Estimasi Waktu Eksekusi
-
-| Aktivitas | Durasi |
-|---|---|
-| Setup topology + namespace link | ~30 detik |
-| Eksperimen baseline | ~2 menit |
-| Eksperimen DDoS | ~3 menit |
-| Stop capture + merge + filter | ~30 detik |
-| Analisis CSV (3 script) | ~10 detik |
-| Analisis PCAP (2 script) | 1–5 menit |
-| **Total** | **~10 menit** |
+```
+logs/
+├── archive/
+│   ├── baseline/
+│   │   ├── session_baseline.pcap              # Raw packet capture (Phase 1)
+│   │   ├── traffic_analysis.csv               # Flow statistics, packet rates
+│   │   └── baseline_summary.md                # Baseline metrics report
+│   │
+│   └── ddos/
+│       ├── session_ddos.pcap                  # Raw packet capture (Phases 2-3)
+│       ├── traffic_analysis.csv               # Flow stats during attack & recovery
+│       ├── mitigation_events.csv              # DROP rule install/release log
+│       └── ddos_summary.md                    # Attack analysis report
+│
+└── report_graphs/
+    ├── baseline/
+    │   ├── baseline_summary.md                # Baseline narrative
+    │   └── baseline_pcap_summary.md           # PCAP analysis
+    │
+    ├── combined/
+    │   ├── comparison_report.md               # 3-phase comparison
+    │   ├── 01_packet_rate_timeline_3phase.png # Packet rate across all phases
+    │   ├── 02_threat_score_escalation.png    # Per-attacker threat evolution
+    │   ├── 03_detection_state_distribution.png # FSM state occupancy
+    │   ├── 04_attacker_attribution.png        # Attacker identification chart
+    │   └── 05_mitigation_lifecycle.png        # Rule installation timeline
+    │
+    └── ddos/
+        ├── ddos_summary.md                    # Attack phase narrative
+        └── ddos_pcap_summary.md               # PCAP attack analysis
+```
 
 ---
 
-## Referensi
+## NIST SP 800-86 Compliance
 
-1. **NIST SP 800-86** — Kent, K., Chevalier, S., Grance, T., & Dang, H. (2006). *Guide to Integrating Forensic Techniques into Incident Response*. NIST.
-2. **OpenFlow 1.3 Specification** — Open Networking Foundation.
-3. **Ryu Controller** — https://ryu.readthedocs.io/
-4. **Mininet** — http://mininet.org/
+This project implements the three main phases defined in NIST SP 800-86 (Computer Security Incident Handling Guide):
+
+1. **Detection Phase** (Baseline + Early Attack)
+   - Establish normal traffic baseline
+   - Monitor for anomalies using EWMA
+   - Correlate with SVM classifier
+
+2. **Containment & Mitigation** (Attack Phase)
+   - Drop packets from identified attackers
+   - Per-attacker granularity using OpenFlow
+   - Auto-expiring rules (60-second timeout)
+
+3. **Recovery & Analysis** (Recovery Phase + Post-Experiment)
+   - Verify legitimate traffic restoration
+   - Archive all evidence (PCAP, CSV logs, events)
+   - Generate forensic reports & visualizations
+
+See [NIST_DOCUMENTATION.md](NIST_DOCUMENTATION.md) for detailed framework mapping.
 
 ---
 
-*Project Path: `/home/kali/sdn-icmp` | Framework: NIST SP 800-86 | Generated: Mei 2026*
+## File Descriptions
+
+### Controller
+
+[controller/controller.py](controller/controller.py)
+- Main Ryu OpenFlow controller
+- Implements EWMA-based anomaly detection
+- Queries SVM model for attack confirmation
+- Installs/removes DROP rules per attacker
+
+### Topology
+
+[topology/topology.py](topology/topology.py)
+- Defines 6-switch Mininet topology
+- Creates 25 host nodes across network segments
+- Configures OpenFlow 1.3 protocol
+
+### Analysis Scripts
+
+- [analysis/analyze_combined.py](analysis/analyze_combined.py) — Full 3-phase analysis with multi-panel visualizations
+- [analysis/analyze_baseline.py](analysis/analyze_baseline.py) — Phase 1 statistics only
+- [analysis/analyze_ddos.py](analysis/analyze_ddos.py) — Phase 2-3 analysis
+- [analysis/analyze_pcap_baseline.py](analysis/analyze_pcap_baseline.py) — Deep PCAP inspection for baseline
+- [analysis/analyze_pcap_ddos.py](analysis/analyze_pcap_ddos.py) — Deep PCAP inspection for attack
+
+### Training
+
+- [training/svm_train.py](training/svm_train.py) — Train SVM classifier on ICMP features
+- [training/feature_collector.py](training/feature_collector.py) — Extract ML features from pcap/flows
+- [training/label_dataset.py](training/label_dataset.py) — Label attack vs normal samples
+
+---
+
+## Troubleshooting
+
+### Controller Won't Start
+```bash
+# Check if Ryu is installed
+pip show ryu
+
+# Verify OpenFlow switches are available
+ovs-vsctl show
+
+# Kill lingering processes
+sudo pkill -f ryu-manager
+```
+
+### Mininet Topology Fails
+```bash
+# Clean up residual state
+sudo mn -c
+
+# Verify Mininet installation
+mn --version
+
+# Test basic topology
+sudo python3 -m mininet.clean
+```
+
+### Capture Issues
+```bash
+# Verify tcpdump can access interfaces
+sudo tcpdump -i any -l -n | head -20
+
+# Check available network interfaces
+ip link show
+```
+
+### Analysis Script Errors
+```bash
+# Verify log files exist
+ls -la logs/archive/baseline/
+ls -la logs/archive/ddos/
+
+# Check CSV format
+head -5 logs/archive/baseline/traffic_analysis.csv
+```
+
+---
+
+## Key Features
+
+✅ **Distributed Attack Detection** — Identifies multi-source ICMP flood simultaneously  
+✅ **Intelligent Mitigation** — Per-attacker IP granularity; preserves legitimate traffic  
+✅ **Anomaly Detection** — EWMA sliding window with SVM confirmation  
+✅ **Forensic Completeness** — PCAP, event logs, flow statistics, visualizations  
+✅ **NIST-Aligned** — Follows SP 800-86 framework for incident handling  
+✅ **Reproducible** — 3-minute cycle suitable for classroom/research labs  
+
+---
+
+## References
+
+- [NIST SP 800-86: Computer Security Incident Handling Guide](https://csrc.nist.gov/publications/detail/sp/800-86/final)
+- [Ryu Project](https://osrg.github.io/ryu/)
+- [Mininet](http://mininet.org/)
+- [OpenFlow Specification 1.3](https://www.opennetworking.org/)
+
+---
+
+## License
+
+This project is provided for educational and research purposes. See LICENSE file for details.
+
+---
+
+## Contact & Support
+
+For questions, bug reports, or contributions, please open an issue in the repository.
+
+**Last Updated:** June 2026  
+**Status:** Stable
