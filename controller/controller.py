@@ -104,6 +104,10 @@ class MonitorSwitch13(app_manager.RyuApp):
         self.ewma_alpha = 0.3
         self.ewma_rates = defaultdict(float)
 
+        # UPDATED: flag skenario "DDoS tanpa mitigasi" — set via env var
+        # Jalankan dengan: DISABLE_MITIGATION=1 ryu-manager controller/controller.py
+        self.disable_mitigation = os.environ.get("DISABLE_MITIGATION", "0") == "1"
+
         self.alert_log_interval    = 0.025
         self.warning_log_interval  = 0.1
         self.info_log_interval     = 2.0
@@ -215,6 +219,13 @@ class MonitorSwitch13(app_manager.RyuApp):
         self.logger.info(self._paint("🔒 Ryu SDN ICMP Flood Forensic Controller — Final (Drop-Based)", self.CYAN))
         self.logger.info(self._paint("📊 3-Phase scenario: NORMAL → ATTACK → MITIGATED", self.CYAN))
         self.logger.info(self._paint("🧾 Baseline ping always logged to CSV | Clear cliff on grafik", self.CYAN))
+        # UPDATED: tampilkan status mode mitigasi secara jelas di log, supaya
+        # screenshot/log run "tanpa mitigasi" tidak tertukar dengan run normal.
+        if self.disable_mitigation:
+            self.logger.warning(self._paint(
+                "⚠️  MITIGATION DISABLED — mode deteksi-saja (DISABLE_MITIGATION=1)", self.YELLOW))
+        else:
+            self.logger.info(self._paint("🛡️  Mitigation ENABLED — mode normal", self.CYAN))
         self.logger.info(self._paint("=" * 90, self.CYAN))
 
     def _print_topology_summary(self):
@@ -297,15 +308,18 @@ class MonitorSwitch13(app_manager.RyuApp):
                 csv.writer(f).writerow(header)
 
     def _init_csv_files(self):
+        # UPDATED: traffic_header dipangkas dari 25 kolom jadi 13 kolom.
+        # Kolom dihapus karena redundan/tidak pernah dipakai di analyzer:
+        # severity, event_type, mitigation_status (turunan dari detection_status),
+        # src_port, dst_port (sudah terangkum di session_id),
+        # src_mac, dst_mac, dpid (numerik, dpid_name sudah cukup),
+        # in_port, out_port, attack_type (turunan dari final_prediction),
+        # attacker_segment (turunan dari dpid_name).
         traffic_header = [
-            "timestamp", "severity", "event_type", "detection_status",
-            "mitigation_status", "phase",
-            "session_id", "protocol_name",
-            "src_ip", "dst_ip", "src_port", "dst_port",
-            "src_mac", "dst_mac", "dpid", "dpid_name",
-            "in_port", "out_port", "packet_rate", "packet_count",
-            "threat_score", "attack_type", "final_prediction",
-            "attacker_segment", "event_note",
+            "timestamp", "src_ip", "dst_ip", "protocol_name", "session_id",
+            "detection_status", "phase",
+            "packet_rate", "packet_count", "threat_score",
+            "final_prediction", "dpid_name", "event_note",
         ]
 
         mitigation_header = [
@@ -316,7 +330,7 @@ class MonitorSwitch13(app_manager.RyuApp):
 
         self._ensure_csv_with_header(self.traffic_analysis_path, traffic_header)
         self._ensure_csv_with_header(self.mitigation_log_path,   mitigation_header)
-        self._ok("CSV_READY | traffic_analysis.csv (with phase col) | mitigation_events.csv")
+        self._ok("CSV_READY | traffic_analysis.csv (13 cols, ringkas) | mitigation_events.csv")
 
     def _append_csv(self, path, row):
         with open(path, "a", newline="") as f:
@@ -451,12 +465,17 @@ class MonitorSwitch13(app_manager.RyuApp):
         return 40
 
     def _get_attack_type(self, protocol_name, final_prediction, mitigation_active):
+        # Catatan: tidak lagi dipakai untuk kolom CSV (dihapus saat pemangkasan
+        # 25→13 kolom karena bisa diturunkan ulang dari final_prediction).
+        # Method ini dibiarkan tetap ada untuk keperluan lain bila diperlukan.
         if protocol_name != "ICMP":      return "BENIGN_TRAFFIC"
         if mitigation_active:            return "ICMP_FLOOD_DROPPED"
         if final_prediction == 1:        return "ICMP_FLOOD"
         return "BENIGN_ICMP"
 
     def _get_attacker_segment(self, src_ip):
+        # Catatan: tidak lagi dipakai untuk kolom CSV (redundan dengan dpid_name).
+        # Method ini dibiarkan tetap ada untuk keperluan lain bila diperlukan.
         if src_ip in self.ATTACKER_SEGMENTS:
             _, seg = self.ATTACKER_SEGMENTS[src_ip]
             return seg
@@ -679,6 +698,13 @@ class MonitorSwitch13(app_manager.RyuApp):
                 self.logger.error("Mitigation worker error: %s", e)
 
     def _apply_mitigation_if_needed(self, datapath, src_ip):
+        # UPDATED: skenario "DDoS tanpa mitigasi" — kalau flag aktif, deteksi
+        # tetap berjalan normal (status bisa naik ke ATTACK_CONFIRMED), tapi
+        # tidak ada flow rule DROP yang dipasang sama sekali. Otomatis bikin
+        # mitigation_events.csv kosong (cuma header) untuk skenario ini.
+        if self.disable_mitigation:
+            return "OFF"
+
         target_dp, target_dpid = self._resolve_mitigation_datapath(src_ip, datapath)
         state = self.active_mitigations[src_ip]
 
@@ -833,15 +859,12 @@ class MonitorSwitch13(app_manager.RyuApp):
 
                     event_note = "tcp_normal" if proto == "TCP" else "udp_normal"
 
+                    # UPDATED: 13 kolom (lihat _init_csv_files)
                     self._append_csv(self.traffic_analysis_path, [
-                        timestamp, "INFO", "NORMAL", "NORMAL", "OFF", phase,
-                        session_id, proto,
-                        src_ip, dst_ip,
-                        sp if sp else "", dp if dp else "",
-                        src_mac, dst_mac, dpid, dpid_name,
-                        in_port, out_port if isinstance(out_port, int) else 0,
+                        timestamp, src_ip, dst_ip, proto, session_id,
+                        "NORMAL", phase,
                         round(packet_rate, 4), packet_count,
-                        5, "BENIGN_TRAFFIC", 0, "NORMAL_HOST",
+                        5, 0, dpid_name,
                         event_note,
                     ])
                     key = f"{proto}:{src_ip}->{dst_ip}:{dp}"
@@ -870,14 +893,12 @@ class MonitorSwitch13(app_manager.RyuApp):
         packet_count = session["packet_count"]
 
         if dst_ip != self.VICTIM_IP:
+            # UPDATED: 13 kolom
             self._append_csv(self.traffic_analysis_path, [
-                timestamp, "INFO", "NORMAL", "NORMAL", "OFF", "NORMAL",
-                session_id, "ICMP",
-                src_ip, dst_ip, "", "",
-                src_mac, dst_mac, dpid, dpid_name,
-                in_port, out_port if isinstance(out_port, int) else 0,
+                timestamp, src_ip, dst_ip, "ICMP", session_id,
+                "NORMAL", "NORMAL",
                 round(packet_rate, 4), packet_count,
-                5, "BENIGN_ICMP", 0, "NORMAL_HOST",
+                5, 0, dpid_name,
                 "icmp_non_victim",
             ])
             key = f"ICMP:{src_ip}->{dst_ip}"
@@ -904,14 +925,12 @@ class MonitorSwitch13(app_manager.RyuApp):
             )
             phase = "MITIGATED" if any_mitigation else "NORMAL"
 
+            # UPDATED: 13 kolom
             self._append_csv(self.traffic_analysis_path, [
-                timestamp, "INFO", "NORMAL", "NORMAL", "OFF", phase,
-                session_id, "ICMP",
-                src_ip, dst_ip, "", "",
-                src_mac, dst_mac, dpid, dpid_name,
-                in_port, out_port if isinstance(out_port, int) else 0,
+                timestamp, src_ip, dst_ip, "ICMP", session_id,
+                "NORMAL", phase,
                 round(packet_rate, 4), packet_count,
-                5, "BENIGN_ICMP", 0, "NORMAL_HOST",
+                5, 0, dpid_name,
                 "icmp_to_victim",
             ])
             key = f"BASELINE:{src_ip}->{dst_ip}"
@@ -931,36 +950,29 @@ class MonitorSwitch13(app_manager.RyuApp):
             session_id, src_ip, final_prediction, packet_rate, mitigation_active)
         detection_status = detection_state["status"]
 
+        # UPDATED: severity/event_type/attack_type/attacker_segment dihapus
+        # (tidak lagi ditulis ke CSV); final_prediction_log, event_note, phase
+        # tetap dihitung karena masih dipakai.
         if mitigation_active:
             final_prediction_log = 0
-            severity   = "INFO"
-            event_type = "LIMITED"
             event_note = "attacker_blocked"
             phase      = "MITIGATED"
         elif detection_status == "ATTACK_CONFIRMED":
             final_prediction_log = final_prediction
-            severity   = "ALERT"
-            event_type = "ATTACK"
             event_note = "flood_confirmed"
             phase      = "ATTACK"
         elif detection_status == "WARNING":
             final_prediction_log = final_prediction
-            severity   = "WARNING"
-            event_type = "SUSPICIOUS"
             event_note = "rate_warning"
             phase      = "ATTACK"
         else:
             final_prediction_log = final_prediction
-            severity   = "INFO"
-            event_type = "NORMAL"
             event_note = "icmp_normal"
             phase      = "NORMAL"
 
         logged_packet_rate = 0.0 if mitigation_active else packet_rate
         threat_score = self._calculate_threat_score(logged_packet_rate, final_prediction_log)
-        risk_emoji       = self._get_risk_emoji(threat_score)
-        attack_type      = self._get_attack_type("ICMP", final_prediction_log, mitigation_active)
-        attacker_segment = self._get_attacker_segment(src_ip)
+        risk_emoji   = self._get_risk_emoji(threat_score)
 
         should_write_csv = True
         if mitigation_active:
@@ -969,16 +981,13 @@ class MonitorSwitch13(app_manager.RyuApp):
                 should_write_csv = False
 
         if should_write_csv:
+            # UPDATED: 13 kolom
             self._append_csv(self.traffic_analysis_path, [
-                timestamp, severity, event_type, detection_status,
-                mitigation_status, phase,
-                session_id, "ICMP",
-                src_ip, dst_ip, "", "",
-                src_mac, dst_mac, dpid, dpid_name,
-                in_port, out_port if isinstance(out_port, int) else 0,
+                timestamp, src_ip, dst_ip, "ICMP", session_id,
+                detection_status, phase,
                 round(logged_packet_rate, 4), packet_count,
-                threat_score, attack_type, final_prediction_log,
-                attacker_segment, event_note,
+                threat_score, final_prediction_log, dpid_name,
+                event_note,
             ])
 
         if mitigation_active:
