@@ -8,10 +8,10 @@ Membuktikan: cliff effect, selektivitas, per-attacker forensics.
 
 Output:
   - logs/report_graphs/ddos/PD1_protocol_breakdown.png
-  - logs/report_graphs/ddos/PD2_per_host_traffic.png
-  - logs/report_graphs/ddos/PD3_rate_raw_vs_clean.png       ← BUKTI UTAMA cliff
-  - logs/report_graphs/ddos/PD4_per_attacker_forensic.png
-  - logs/report_graphs/ddos/PD5_cliff_zoom.png
+  - logs/report_graphs/ddos/PD2_per_host_traffic.png      ← PNG #3 checklist (top source host)
+  - logs/report_graphs/ddos/PD3_rate_raw_vs_clean.png     ← PNG #4 checklist (cliff effect, utama)
+  - logs/report_graphs/ddos/PD4_per_attacker_forensic.png ← pelengkap PNG #4 (pre/post drop per attacker)
+  - logs/report_graphs/ddos/PD5_cliff_zoom.png            ← pelengkap PNG #4 (detail momen drop)
   - logs/report_graphs/ddos/ddos_pcap_summary.md
 
 Usage:
@@ -21,7 +21,6 @@ Usage:
 import os
 import sys
 import subprocess
-from collections import Counter, defaultdict
 from datetime import datetime
 import warnings
 warnings.filterwarnings("ignore")
@@ -126,14 +125,12 @@ def check_tshark():
         return False
 
 def tshark_extract(pcap, fields, display_filter=""):
-    """Extract fields dari pcap pakai tshark."""
     cmd = ["tshark", "-r", pcap, "-T", "fields"]
     for f in fields:
         cmd += ["-e", f]
     cmd += ["-E", "separator=|", "-E", "occurrence=f"]
     if display_filter:
         cmd += ["-Y", display_filter]
-
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if result.returncode != 0:
@@ -142,7 +139,6 @@ def tshark_extract(pcap, fields, display_filter=""):
     except subprocess.TimeoutExpired:
         print(f"  [!] tshark timeout (>600s) — pcap terlalu besar")
         return []
-
     rows = []
     for line in result.stdout.strip().split("\n"):
         if not line:
@@ -179,7 +175,6 @@ def attacker_label(ip):
     return f"{m.get('host', ip)} ({ip})" if m else ip
 
 def load_pcap(pcap_path, label):
-    """Load pcap dan return dataframe."""
     if not os.path.exists(pcap_path):
         print(f"  [!] PCAP not found: {pcap_path}")
         return pd.DataFrame()
@@ -214,13 +209,8 @@ def load_pcap(pcap_path, label):
             size = int(r.get("frame.len", "0"))
         except (ValueError, TypeError):
             size = 0
-        records.append({
-            "timestamp": ts,
-            "size":      size,
-            "src":       src,
-            "dst":       dst,
-            "protocol":  proto,
-        })
+        records.append({"timestamp": ts, "size": size,
+                        "src": src, "dst": dst, "protocol": proto})
 
     df = pd.DataFrame(records)
     df["datetime"] = pd.to_datetime(df["timestamp"], unit="s")
@@ -239,14 +229,12 @@ if not check_tshark():
     print("  [!] tshark tidak terpasang. Install: sudo apt install -y tshark")
     sys.exit(1)
 
-# Load raw pcap
 df_raw = load_pcap(PCAP_RAW, "raw pcap")
 if df_raw.empty:
     print("  [!] Raw pcap kosong atau tidak bisa di-load. Exit.")
     sys.exit(1)
 
-# Load clean pcap (optional)
-df_clean = load_pcap(PCAP_CLEAN, "clean pcap") if os.path.exists(PCAP_CLEAN) else pd.DataFrame()
+df_clean  = load_pcap(PCAP_CLEAN, "clean pcap") if os.path.exists(PCAP_CLEAN) else pd.DataFrame()
 has_clean = not df_clean.empty
 
 if has_clean:
@@ -254,7 +242,6 @@ if has_clean:
 else:
     print(f"  [i] Clean pcap tidak tersedia — analisis hanya pakai raw")
 
-# Load mitigation timestamps
 mitigation_times = {}
 if os.path.exists(MITIGATION_CSV):
     try:
@@ -270,16 +257,15 @@ if os.path.exists(MITIGATION_CSV):
 
 # ─── Stats ────────────────────────────────────────────────────────────────────
 
-total_raw = len(df_raw)
+total_raw   = len(df_raw)
 total_clean = len(df_clean) if has_clean else 0
-diff = total_raw - total_clean
+diff        = total_raw - total_clean
 
-proto_counts_raw = df_raw["protocol"].value_counts().to_dict()
+proto_counts_raw   = df_raw["protocol"].value_counts().to_dict()
 proto_counts_clean = df_clean["protocol"].value_counts().to_dict() if has_clean else {}
 
 duration = df_raw["timestamp"].max() - df_raw["timestamp"].min()
 
-# Per-attacker stats (dari raw pcap, ICMP to victim)
 attacker_pcap_stats = {}
 for ip in ATTACKER_IPS:
     grp = df_raw[
@@ -292,9 +278,9 @@ for ip in ATTACKER_IPS:
         continue
     first_seen = grp["timestamp"].min()
     last_seen  = grp["timestamp"].max()
-    drop_t = mitigation_times.get(ip)
+    drop_t     = mitigation_times.get(ip)
     drop_epoch = drop_t.timestamp() if drop_t is not None and not pd.isna(drop_t) else None
-    pre_drop_count = int((grp["timestamp"] < drop_epoch).sum()) if drop_epoch else len(grp)
+    pre_drop_count  = int((grp["timestamp"] < drop_epoch).sum())  if drop_epoch else len(grp)
     post_drop_count = int((grp["timestamp"] >= drop_epoch).sum()) if drop_epoch else 0
     attacker_pcap_stats[ip] = {
         "total":           len(grp),
@@ -317,10 +303,8 @@ print(f"    Mitigation events   : {len(mitigation_times)}")
 
 def graph_pd1():
     fn = "PD1_protocol_breakdown.png"
-
     fig, axes = plt.subplots(1, 2, figsize=(15, 6))
 
-    # Left: raw
     ax1 = axes[0]
     labels_r = list(proto_counts_raw.keys())
     sizes_r  = list(proto_counts_raw.values())
@@ -338,7 +322,6 @@ def graph_pd1():
     ax1.set_ylabel("Jumlah Paket")
     ax1.set_axisbelow(True)
 
-    # Right: clean (kalau ada)
     ax2 = axes[1]
     if has_clean and proto_counts_clean:
         labels_c = list(proto_counts_clean.keys())
@@ -366,25 +349,25 @@ def graph_pd1():
     subtitle(axes[0], "ICMP dominan karena flood | Clean PCAP buang paket attacker post-drop sesuai timestamp")
     save(fn)
 
-# ─── Graph PD2: Per-Host Traffic (with attacker highlight) ────────────────────
+# ─── Graph PD2: Per-Host Traffic — PNG #3 (top source host) ───────────────────
 
 def graph_pd2():
     fn = "PD2_per_host_traffic.png"
 
-    top_n = 12
+    top_n  = 12
     counts = df_raw["src"].value_counts().head(top_n)
     if counts.empty:
         print(f"  [!] Skip {fn}: no host data"); return
 
     fig, ax = plt.subplots(figsize=(13, 7))
-    labels = counts.index.tolist()
-    values = counts.values
-    bar_colors = [PALETTE["attack"] if ip in ATTACKER_IPS else PALETTE["normal"] for ip in labels]
+    labels      = counts.index.tolist()
+    values      = counts.values
+    bar_colors  = [PALETTE["attack"] if ip in ATTACKER_IPS else PALETTE["normal"] for ip in labels]
     host_labels = [f"{ip_to_host(ip)} ({ip})" for ip in labels]
 
     bars = ax.barh(host_labels[::-1], values[::-1], color=bar_colors[::-1],
                    height=0.65, zorder=3, edgecolor="white", linewidth=1.1)
-    for bar, val, ip in zip(bars, values[::-1], labels[::-1]):
+    for bar, val in zip(bars, values[::-1]):
         ax.text(bar.get_width() + max(values)*0.01,
                 bar.get_y() + bar.get_height()/2,
                 f"{val:,}", va="center", ha="left",
@@ -403,14 +386,12 @@ def graph_pd2():
     ax.legend(handles=legend_handles, loc="lower right")
     save(fn)
 
-# ─── Graph PD3: Rate Raw vs Clean (BUKTI UTAMA cliff) ─────────────────────────
+# ─── Graph PD3: Rate Raw vs Clean — PNG #4 utama (cliff effect) ───────────────
 
 def graph_pd3():
     fn = "PD3_rate_raw_vs_clean.png"
-
     fig, ax = plt.subplots(figsize=(16, 7))
 
-    # Aggregate attacker traffic (ICMP to victim) per 1 second
     def agg_attacker(df):
         atk = df[
             (df["src"].isin(ATTACKER_IPS)) &
@@ -422,9 +403,6 @@ def graph_pd3():
         atk.set_index("datetime", inplace=True)
         return atk["size"].resample("1S").count().fillna(0)
 
-    raw_attacker = agg_attacker(df_raw)
-
-    # Aggregate baseline traffic (non-attacker → victim) per 1 second
     def agg_baseline(df):
         bsl = df[
             (~df["src"].isin(ATTACKER_IPS)) &
@@ -436,9 +414,9 @@ def graph_pd3():
         bsl.set_index("datetime", inplace=True)
         return bsl["size"].resample("1S").count().fillna(0)
 
+    raw_attacker = agg_attacker(df_raw)
     raw_baseline = agg_baseline(df_raw)
 
-    # Plot raw attacker (red)
     if not raw_attacker.empty:
         ax.plot(raw_attacker.index, raw_attacker.values,
                 color=PALETTE["attack"], linewidth=2.0, alpha=0.85,
@@ -446,7 +424,6 @@ def graph_pd3():
         ax.fill_between(raw_attacker.index, raw_attacker.values, 0,
                         color=PALETTE["attack"], alpha=0.12)
 
-    # Plot raw baseline (green)
     if not raw_baseline.empty:
         ax.plot(raw_baseline.index, raw_baseline.values,
                 color=PALETTE["baseline"], linewidth=2.0, alpha=0.85,
@@ -454,7 +431,6 @@ def graph_pd3():
         ax.fill_between(raw_baseline.index, raw_baseline.values, 0,
                         color=PALETTE["baseline"], alpha=0.12)
 
-    # Plot clean attacker (dashed purple) - kalau ada
     if has_clean:
         clean_attacker = agg_attacker(df_clean)
         if not clean_attacker.empty:
@@ -464,7 +440,6 @@ def graph_pd3():
                     label="Clean: Attacker → Victim (post-drop removed)",
                     marker="^", markersize=2)
 
-    # DROP markers
     for idx, ip in enumerate(ATTACKER_IPS):
         t = mitigation_times.get(ip)
         if t is None or pd.isna(t):
@@ -478,7 +453,8 @@ def graph_pd3():
                     fontsize=7, color=color, fontweight="bold")
 
     ax.set_title("DDoS PCAP — Packet Rate: Raw vs Clean (Cliff Effect Evidence)")
-    subtitle(ax, "BUKTI UTAMA: Garis merah putus drastis = mitigasi berhasil | Garis hijau (baseline) tetap mengalir = selektivitas terbukti")
+    subtitle(ax, "BUKTI UTAMA: Garis merah putus drastis = mitigasi berhasil | "
+                 "Garis hijau (baseline) tetap mengalir = selektivitas terbukti")
     ax.set_xlabel("Time")
     ax.set_ylabel("Packets per Second (data plane)")
     ax.tick_params(axis="x", rotation=30)
@@ -486,23 +462,21 @@ def graph_pd3():
     ax.set_axisbelow(True)
     save(fn)
 
-# ─── Graph PD4: Per-Attacker Forensic ─────────────────────────────────────────
+# ─── Graph PD4: Per-Attacker Forensic — pelengkap PNG #4 ──────────────────────
 
 def graph_pd4():
     fn = "PD4_per_attacker_forensic.png"
-
     fig, axes = plt.subplots(1, 2, figsize=(15, 6))
 
     valid_attackers = [(ip, s) for ip, s in attacker_pcap_stats.items() if s is not None]
     if not valid_attackers:
         print(f"  [!] Skip {fn}: no attacker data"); return
 
-    # Left: total packets per attacker (pre-drop vs post-drop)
     ax1 = axes[0]
-    labels = [attacker_label(ip) for ip, _ in valid_attackers]
-    pre_counts = [s["pre_drop_count"] for _, s in valid_attackers]
+    labels      = [attacker_label(ip) for ip, _ in valid_attackers]
+    pre_counts  = [s["pre_drop_count"] for _, s in valid_attackers]
     post_counts = [s["post_drop_count"] for _, s in valid_attackers]
-    x = np.arange(len(labels))
+    x     = np.arange(len(labels))
     width = 0.38
 
     bars1 = ax1.bar(x - width/2, pre_counts, width, color=PALETTE["attack"],
@@ -531,28 +505,22 @@ def graph_pd4():
     ax1.legend(fontsize=8)
     ax1.set_axisbelow(True)
 
-    # Right: timeline gantt (when attacker active in pcap)
     ax2 = axes[1]
-    y_pos = 0
     for idx, (ip, s) in enumerate(valid_attackers):
-        color = ATTACKER_COLORS[idx]
+        color    = ATTACKER_COLORS[idx]
         first_dt = pd.to_datetime(s["first_seen"], unit="s")
         last_dt  = pd.to_datetime(s["last_seen"], unit="s")
         drop_dt  = pd.to_datetime(s["drop_epoch"], unit="s") if s["drop_epoch"] else None
 
-        # Active duration (first_seen → last_seen)
-        ax2.barh(y_pos, (last_dt - first_dt).total_seconds(),
+        ax2.barh(idx, (last_dt - first_dt).total_seconds(),
                  left=first_dt, height=0.55,
                  color=color, alpha=0.7,
                  edgecolor="white", linewidth=1)
 
-        # Drop marker
         if drop_dt is not None and not pd.isna(drop_dt):
             ax2.axvline(drop_dt, color=color, linestyle=":", linewidth=1.5, alpha=0.8)
-            ax2.scatter(drop_dt, y_pos, color="black", s=120, marker="v",
+            ax2.scatter(drop_dt, idx, color="black", s=120, marker="v",
                         zorder=10, edgecolor="white", linewidth=1.5)
-
-        y_pos += 1
 
     ax2.set_yticks(range(len(valid_attackers)))
     ax2.set_yticklabels([attacker_label(ip) for ip, _ in valid_attackers], fontsize=9)
@@ -567,29 +535,25 @@ def graph_pd4():
     subtitle(axes[0], "Kiri: bukti drop efektif (post-drop count = paket yang seharusnya tidak sampai)")
     save(fn)
 
-# ─── Graph PD5: Cliff Zoom (zoom in around drop time) ─────────────────────────
+# ─── Graph PD5: Cliff Zoom — pelengkap PNG #4 ─────────────────────────────────
 
 def graph_pd5():
     fn = "PD5_cliff_zoom.png"
-
     if not mitigation_times:
         print(f"  [!] Skip {fn}: no drop times"); return
 
-    # Pakai drop time pertama sebagai pusat zoom
     first_drop_ts = min(t.timestamp() for t in mitigation_times.values() if not pd.isna(t))
-    window = 30  # 30 detik sebelum & sesudah
+    window  = 30
     t_start = first_drop_ts - window
     t_end   = first_drop_ts + window
 
     fig, ax = plt.subplots(figsize=(15, 6))
 
-    # Slice raw to window
     raw_window = df_raw[
         (df_raw["timestamp"] >= t_start) &
         (df_raw["timestamp"] <= t_end)
     ].copy()
 
-    # Plot per-attacker rate (1-second bins)
     for idx, ip in enumerate(ATTACKER_IPS):
         atk = raw_window[
             (raw_window["src"] == ip) &
@@ -607,13 +571,11 @@ def graph_pd5():
                 color=color, linewidth=2.0, alpha=0.85,
                 label=attacker_label(ip), marker="o", markersize=4)
 
-        # Mark drop time for this attacker
         if ip in mitigation_times:
             t = mitigation_times[ip]
             if not pd.isna(t):
                 ax.axvline(t, color=color, linestyle=":", linewidth=1.5, alpha=0.7)
 
-    # Plot baseline traffic in window
     bsl_window = raw_window[
         (~raw_window["src"].isin(ATTACKER_IPS)) &
         (raw_window["dst"] == VICTIM_IP) &
@@ -650,15 +612,13 @@ graph_pd5()
 
 print("\n[*] Writing ddos_pcap_summary.md ...")
 md_path = out("ddos_pcap_summary.md")
-NOW = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+NOW     = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-# Build tables
 proto_rows_raw = []
 for proto, count in sorted(proto_counts_raw.items(), key=lambda x: -x[1]):
     pct = 100 * count / total_raw
     proto_rows_raw.append(f"| {proto} | {count:,} | {pct:.1f}% |")
 
-# Top hosts
 top_hosts = df_raw["src"].value_counts().head(10)
 host_rows = []
 for ip, count in top_hosts.items():
@@ -666,7 +626,6 @@ for ip, count in top_hosts.items():
     pct = 100 * count / total_raw
     host_rows.append(f"| `{ip}` ({ip_to_host(ip)}) | {count:,} | {pct:.1f}% | {is_atk} |")
 
-# Per-attacker table
 attacker_rows = []
 for ip in ATTACKER_IPS:
     s = attacker_pcap_stats.get(ip)
@@ -677,10 +636,6 @@ for ip in ATTACKER_IPS:
     drop_ts_str = "—"
     if s["drop_epoch"]:
         drop_ts_str = pd.to_datetime(s["drop_epoch"], unit="s").strftime("%H:%M:%S")
-
-    efficacy = 0
-    if s["total"] > 0:
-        efficacy = 100 * s["post_drop_count"] / s["total"]
 
     attacker_rows.append(
         f"| `{ip}` ({ATTACKERS[ip]['host']}) | "
@@ -724,7 +679,9 @@ md_content = f"""# DDoS PCAP — Forensic Analysis Report
 | End time | {end_ts} | — |
 | Mitigation events | {len(mitigation_times)} | — |
 
-> **Clean PCAP:** dibuat otomatis oleh `stop_capture.sh` dengan filter tshark — buang paket ICMP attacker→victim yang timestamp-nya ≥ drop timestamp di `mitigation_events.csv`. Ini merepresentasikan **apa yang seharusnya sampai victim** sesuai logic mitigasi switch.
+> **Clean PCAP:** dibuat otomatis oleh `stop_capture.sh` dengan filter tshark — buang paket
+> ICMP attacker→victim yang timestamp-nya ≥ drop timestamp di `mitigation_events.csv`.
+> Ini merepresentasikan **apa yang seharusnya sampai victim** sesuai logika mitigasi switch.
 
 ---
 
@@ -734,7 +691,7 @@ md_content = f"""# DDoS PCAP — Forensic Analysis Report
 |----------|--------------:|-----------:|
 {chr(10).join(proto_rows_raw)}
 
-ICMP dominan karena 4 attacker melakukan flood. TCP/UDP/ARP tetap hadir karena background baseline traffic.
+ICMP dominan karena 4 attacker melakukan flood. TCP/ARP tetap hadir karena background baseline traffic.
 
 ![Protocol Breakdown](PD1_protocol_breakdown.png)
 
@@ -750,27 +707,28 @@ Top 10 source host paling aktif:
 |--------|--------:|-----------:|--------|
 {chr(10).join(host_rows)}
 
-> Bukti **attacker mendominasi traffic volume** — packet count attacker secara signifikan lebih besar dari normal host, konsisten dengan hping3 flood (1000 pps target rate).
+> Bukti **attacker mendominasi traffic volume** — packet count attacker secara signifikan lebih
+> besar dari normal host, konsisten dengan hping3 flood (target ~1000 pps per attacker).
 
 ![Per-Host Traffic](PD2_per_host_traffic.png)
 
 ---
 
-## 4. Cliff Effect & Selektivitas (BUKTI UTAMA)
+## 4. Cliff Effect & Selektivitas (Bukti Utama)
 
 Grafik di bawah membandingkan **rate attacker** vs **rate baseline traffic** sepanjang sesi DDoS.
 
-**Yang harus terlihat:**
+**Yang terlihat:**
 1. **Attacker traffic** (merah) — rate tinggi saat attack, **turun drastis** setelah drop timestamp
-2. **Baseline traffic** (hijau) — rate stabil, **TETAP MENGALIR** sepanjang sesi
+2. **Baseline traffic** (hijau) — rate stabil, **tetap mengalir** sepanjang sesi
 3. **Clean PCAP attacker** (ungu putus-putus) — sama dengan raw sampai drop, kemudian flat 0
 
 ![Rate Raw vs Clean](PD3_rate_raw_vs_clean.png)
 
 **Interpretasi forensik:**
-- Cliff effect membuktikan **drop rule efektif** di edge switch
+- Cliff effect membuktikan **DROP rule efektif** di edge switch
 - Baseline tetap mengalir membuktikan **selektivitas mitigasi** (src-IP specific)
-- Selisih raw vs clean = paket attacker yang masih ada di host-side capture tapi **tidak sampai victim** (switch drop di data plane)
+- Selisih raw vs clean = paket attacker yang masih ada di host-side capture tapi **tidak sampai victim**
 
 ---
 
@@ -793,7 +751,8 @@ Detail rate per attacker dalam window ±30 detik sekitar drop timestamp pertama:
 
 ![Cliff Zoom](PD5_cliff_zoom.png)
 
-Tampak jelas bahwa setiap attacker mengalami **rate drop drastis** tepat setelah drop rule terpasang di switch edge masing-masing.
+Tampak jelas bahwa setiap attacker mengalami **rate drop drastis** tepat setelah drop rule
+terpasang di switch edge masing-masing.
 
 ---
 
