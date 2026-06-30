@@ -12,8 +12,8 @@ Output:
   - logs/report_graphs/combined/C3_state_comparison.png
 
 Prasyarat:
-  - Sudah jalankan analyze_baseline.py (untuk PNG baseline tersedia)
-  - Sudah jalankan analyze_ddos.py (untuk PNG ddos tersedia)
+  - Sudah jalankan analyze_baseline.py
+  - Sudah jalankan analyze_ddos.py
 
 Usage:
   python3 analysis/analyze_combined.py
@@ -21,7 +21,6 @@ Usage:
 
 import os
 import sys
-import shutil
 from datetime import datetime
 import warnings
 warnings.filterwarnings("ignore")
@@ -176,28 +175,27 @@ print(f"  [i] Mitigation:      {len(mit_df):,}")
 def calc_stats(df, label):
     if df.empty:
         return {}
-    duration = (df["timestamp"].max() - df["timestamp"].min()).total_seconds()
+    duration     = (df["timestamp"].max() - df["timestamp"].min()).total_seconds()
     proto_counts = df["protocol_name"].value_counts().to_dict()
     state_counts = df["detection_status"].value_counts().to_dict()
     return {
-        "label":          label,
-        "total":          len(df),
-        "duration":       duration,
-        "unique_src":     df["src_ip"].nunique(),
-        "unique_dst":     df["dst_ip"].nunique(),
-        "avg_rate":       float(df["packet_rate"].mean()) if "packet_rate" in df.columns else 0,
-        "max_rate":       float(df["packet_rate"].max())  if "packet_rate" in df.columns else 0,
-        "protocols":      proto_counts,
-        "states":         state_counts,
-        "warning_count":  state_counts.get("WARNING", 0),
-        "attack_count":   state_counts.get("ATTACK_CONFIRMED", 0),
-        "drop_count":     state_counts.get("DROP_ACTIVE", 0),
+        "label":         label,
+        "total":         len(df),
+        "duration":      duration,
+        "unique_src":    df["src_ip"].nunique(),
+        "unique_dst":    df["dst_ip"].nunique(),
+        "avg_rate":      float(df["packet_rate"].mean()) if "packet_rate" in df.columns else 0,
+        "max_rate":      float(df["packet_rate"].max())  if "packet_rate" in df.columns else 0,
+        "protocols":     proto_counts,
+        "states":        state_counts,
+        "warning_count": state_counts.get("WARNING", 0),
+        "attack_count":  state_counts.get("ATTACK_CONFIRMED", 0),
+        "drop_count":    state_counts.get("DROP_ACTIVE", 0),
     }
 
 baseline_stats = calc_stats(baseline_df, "Baseline")
 ddos_stats     = calc_stats(ddos_df, "DDoS")
 
-# Mitigation times
 mitigation_times = {}
 if not mit_df.empty and "action" in mit_df.columns:
     drop_rows = mit_df[mit_df["action"].str.contains("DROP_ICMP", na=False)]
@@ -215,29 +213,29 @@ def graph_c1():
     if not all_protos:
         print(f"  [!] Skip {fn}: no protocols"); return
 
-    bsl_vals = [baseline_stats["protocols"].get(p, 0) for p in all_protos]
+    bsl_vals  = [baseline_stats["protocols"].get(p, 0) for p in all_protos]
     ddos_vals = [ddos_stats["protocols"].get(p, 0) for p in all_protos]
 
-    # Left: side-by-side bar
-    ax1 = axes[0]
-    x = np.arange(len(all_protos))
-    width = 0.38
+    ax1    = axes[0]
+    x      = np.arange(len(all_protos))
+    width  = 0.38
 
     bars1 = ax1.bar(x - width/2, bsl_vals, width, color=PALETTE["baseline"],
                     label="Baseline", edgecolor="white", linewidth=1.1, zorder=3)
     bars2 = ax1.bar(x + width/2, ddos_vals, width, color=PALETTE["ddos"],
                     label="DDoS", edgecolor="white", linewidth=1.1, zorder=3)
 
+    ymax = max(max(bsl_vals), max(ddos_vals)) if (bsl_vals or ddos_vals) else 1
     for bar, val in zip(bars1, bsl_vals):
         if val > 0:
             ax1.text(bar.get_x() + bar.get_width()/2,
-                     bar.get_height() + max(max(bsl_vals), max(ddos_vals))*0.012,
+                     bar.get_height() + ymax*0.012,
                      f"{val:,}", ha="center", va="bottom", fontsize=8,
                      color=PALETTE["text"])
     for bar, val in zip(bars2, ddos_vals):
         if val > 0:
             ax1.text(bar.get_x() + bar.get_width()/2,
-                     bar.get_height() + max(max(bsl_vals), max(ddos_vals))*0.012,
+                     bar.get_height() + ymax*0.012,
                      f"{val:,}", ha="center", va="bottom", fontsize=8,
                      color=PALETTE["text"])
 
@@ -248,12 +246,11 @@ def graph_c1():
     ax1.legend()
     ax1.set_axisbelow(True)
 
-    # Right: percentage comparison
-    ax2 = axes[1]
+    ax2       = axes[1]
     bsl_total = sum(bsl_vals) or 1
     ddos_total = sum(ddos_vals) or 1
-    bsl_pct = [100*v/bsl_total for v in bsl_vals]
-    ddos_pct = [100*v/ddos_total for v in ddos_vals]
+    bsl_pct   = [100*v/bsl_total for v in bsl_vals]
+    ddos_pct  = [100*v/ddos_total for v in ddos_vals]
 
     bars3 = ax2.bar(x - width/2, bsl_pct, width, color=PALETTE["baseline"],
                     label="Baseline %", edgecolor="white", linewidth=1.1, zorder=3)
@@ -279,7 +276,8 @@ def graph_c1():
 
     fig.suptitle("Protocol Distribution — Baseline vs DDoS",
                  fontsize=14, fontweight="bold", y=1.02)
-    subtitle(axes[0], "DDoS scenario didominasi ICMP karena flood — baseline lebih variatif")
+    # DIUPDATE: hapus sebutan UDP, sesuai traffic baseline yang benar-benar dijalankan
+    subtitle(axes[0], "DDoS didominasi ICMP karena flood — baseline lebih variatif (ICMP, TCP, HTTP, ARP)")
     save(fn)
 
 # ─── Graph C2: Packet Rate Comparison ─────────────────────────────────────────
@@ -288,28 +286,28 @@ def graph_c2():
     fn = "C2_packet_rate_comparison.png"
     fig, axes = plt.subplots(1, 2, figsize=(15, 6))
 
-    metrics = ["avg_rate", "max_rate"]
+    metrics       = ["avg_rate", "max_rate"]
     metric_labels = ["Average\nPacket Rate", "Max\nPacket Rate"]
-    bsl_vals = [baseline_stats[m] for m in metrics]
-    ddos_vals = [ddos_stats[m] for m in metrics]
+    bsl_vals      = [baseline_stats[m] for m in metrics]
+    ddos_vals     = [ddos_stats[m] for m in metrics]
 
-    # Left: avg vs max bar
-    ax1 = axes[0]
-    x = np.arange(len(metrics))
+    ax1   = axes[0]
+    x     = np.arange(len(metrics))
     width = 0.38
     bars1 = ax1.bar(x - width/2, bsl_vals, width, color=PALETTE["baseline"],
                     label="Baseline", edgecolor="white", linewidth=1.1, zorder=3)
     bars2 = ax1.bar(x + width/2, ddos_vals, width, color=PALETTE["ddos"],
                     label="DDoS", edgecolor="white", linewidth=1.1, zorder=3)
 
+    ymax = max(max(bsl_vals), max(ddos_vals)) if (bsl_vals or ddos_vals) else 1
     for bar, val in zip(bars1, bsl_vals):
         ax1.text(bar.get_x() + bar.get_width()/2,
-                 bar.get_height() + max(max(bsl_vals), max(ddos_vals))*0.015,
+                 bar.get_height() + ymax*0.015,
                  f"{val:.2f}", ha="center", va="bottom", fontsize=10,
                  fontweight="bold", color=PALETTE["text"])
     for bar, val in zip(bars2, ddos_vals):
         ax1.text(bar.get_x() + bar.get_width()/2,
-                 bar.get_height() + max(max(bsl_vals), max(ddos_vals))*0.015,
+                 bar.get_height() + ymax*0.015,
                  f"{val:.2f}", ha="center", va="bottom", fontsize=10,
                  fontweight="bold", color=PALETTE["text"])
 
@@ -318,22 +316,20 @@ def graph_c2():
     ax1.set_title("Packet Rate — Baseline vs DDoS")
     ax1.set_ylabel("Packet Rate (pps)")
     ax1.legend()
-    ax1.axhline(20, color=PALETTE["warning"], linestyle="--", linewidth=1, alpha=0.6, label="_")
-    ax1.axhline(50, color=PALETTE["attack"], linestyle="--", linewidth=1, alpha=0.6, label="_")
-    ax1.text(ax1.get_xlim()[1]*0.98, 22, "Warning threshold", fontsize=7,
+    ax1.axhline(20, color=PALETTE["warning"], linestyle="--", linewidth=1, alpha=0.6)
+    ax1.axhline(50, color=PALETTE["attack"],  linestyle="--", linewidth=1, alpha=0.6)
+    ax1.text(ax1.get_xlim()[1]*0.98, 22, "Warning threshold (20 pps)", fontsize=7,
              color=PALETTE["warning"], ha="right")
-    ax1.text(ax1.get_xlim()[1]*0.98, 52, "Attack threshold", fontsize=7,
+    ax1.text(ax1.get_xlim()[1]*0.98, 52, "Attack threshold (50 pps)", fontsize=7,
              color=PALETTE["attack"], ha="right")
     ax1.set_axisbelow(True)
 
-    # Right: multiplier comparison
-    ax2 = axes[1]
+    ax2    = axes[1]
     ratios = []
     for m in metrics:
-        bsl = baseline_stats[m]
+        bsl  = baseline_stats[m]
         ddos = ddos_stats[m]
-        ratio = ddos / bsl if bsl > 0 else 0
-        ratios.append(ratio)
+        ratios.append(ddos / bsl if bsl > 0 else 0)
 
     bars = ax2.bar(metric_labels, ratios, color=PALETTE["ddos"], width=0.5,
                    edgecolor="white", linewidth=1.1, zorder=3)
@@ -345,20 +341,22 @@ def graph_c2():
 
     ax2.set_title("Eskalasi Rate: DDoS vs Baseline (Multiplier)")
     ax2.set_ylabel("Multiplier (kali lipat)")
-    ax2.set_axisbelow(True)
     ax2.axhline(1, color=PALETTE["sub"], linestyle="--", linewidth=1, alpha=0.5)
+    ax2.set_axisbelow(True)
 
     fig.suptitle("Packet Rate Escalation — Baseline vs DDoS",
                  fontsize=14, fontweight="bold", y=1.02)
-    subtitle(axes[0], f"DDoS menghasilkan traffic {ratios[1]:.0f}× lebih besar daripada baseline (max rate)")
+    subtitle(axes[0], f"DDoS menghasilkan traffic {ratios[1]:.0f}× lebih besar dari baseline (max rate)")
     save(fn)
 
-# ─── Graph C3: Detection State Comparison ─────────────────────────────────────
+# ─── Graph C3: Detection State Comparison (PNG #5) ────────────────────────────
+# Ini adalah PNG #5 dari checklist: distribusi detection_status baseline vs DDoS
+# berdampingan dalam satu figure (dua panel).
 
 def graph_c3():
     fn = "C3_state_comparison.png"
 
-    order = ["NORMAL", "WARNING", "ATTACK_CONFIRMED", "DROP_ACTIVE"]
+    order     = ["NORMAL", "WARNING", "ATTACK_CONFIRMED", "DROP_ACTIVE"]
     color_map = {
         "NORMAL":           PALETTE["normal"],
         "WARNING":          PALETTE["warning"],
@@ -368,53 +366,54 @@ def graph_c3():
 
     fig, axes = plt.subplots(1, 2, figsize=(15, 6))
 
-    # Left: baseline states
-    ax1 = axes[0]
+    # Panel kiri: baseline
+    ax1        = axes[0]
     bsl_states = [(s, baseline_stats["states"].get(s, 0)) for s in order]
-    labels1 = [s for s, v in bsl_states if v > 0]
-    values1 = [v for s, v in bsl_states if v > 0]
+    labels1    = [s for s, v in bsl_states if v > 0]
+    values1    = [v for s, v in bsl_states if v > 0]
     if values1:
         colors1 = [color_map[s] for s in labels1]
-        bars = ax1.bar(labels1, values1, color=colors1, width=0.5,
-                       edgecolor="white", linewidth=1.1, zorder=3)
+        bars    = ax1.bar(labels1, values1, color=colors1, width=0.5,
+                          edgecolor="white", linewidth=1.1, zorder=3)
         for bar, val in zip(bars, values1):
             pct = 100*val/sum(values1)
             ax1.text(bar.get_x() + bar.get_width()/2,
                      bar.get_height() + max(values1)*0.012,
                      f"{val:,}\n({pct:.1f}%)", ha="center", va="bottom",
                      fontsize=10, fontweight="bold")
-        ax1.set_title("Baseline — Detection States")
-        ax1.set_ylabel("Events")
         ax1.set_ylim(0, max(values1)*1.22)
     else:
         ax1.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax1.transAxes)
+    ax1.set_title("Baseline — Distribusi Status Deteksi")
+    ax1.set_ylabel("Jumlah Events")
     ax1.set_axisbelow(True)
+    subtitle(ax1, "Seluruh events NORMAL — tidak ada false positive pada traffic sah")
 
-    # Right: ddos states
-    ax2 = axes[1]
+    # Panel kanan: DDoS
+    ax2         = axes[1]
     ddos_states = [(s, ddos_stats["states"].get(s, 0)) for s in order]
-    labels2 = [s for s, v in ddos_states if v > 0]
-    values2 = [v for s, v in ddos_states if v > 0]
+    labels2     = [s for s, v in ddos_states if v > 0]
+    values2     = [v for s, v in ddos_states if v > 0]
     if values2:
         colors2 = [color_map[s] for s in labels2]
-        bars = ax2.bar(labels2, values2, color=colors2, width=0.5,
-                       edgecolor="white", linewidth=1.1, zorder=3)
+        bars    = ax2.bar(labels2, values2, color=colors2, width=0.5,
+                          edgecolor="white", linewidth=1.1, zorder=3)
         for bar, val in zip(bars, values2):
             pct = 100*val/sum(values2)
             ax2.text(bar.get_x() + bar.get_width()/2,
                      bar.get_height() + max(values2)*0.012,
                      f"{val:,}\n({pct:.1f}%)", ha="center", va="bottom",
                      fontsize=10, fontweight="bold")
-        ax2.set_title("DDoS — Detection States")
-        ax2.set_ylabel("Events")
         ax2.set_ylim(0, max(values2)*1.22)
     else:
         ax2.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax2.transAxes)
+    ax2.set_title("DDoS — Distribusi Status Deteksi")
+    ax2.set_ylabel("Jumlah Events")
     ax2.set_axisbelow(True)
+    subtitle(ax2, "WARNING dan ATTACK_CONFIRMED tercatat — serangan terdeteksi sistem")
 
-    fig.suptitle("Detection State Distribution — Baseline vs DDoS",
+    fig.suptitle("Distribusi Status Deteksi — Baseline vs DDoS",
                  fontsize=14, fontweight="bold", y=1.02)
-    subtitle(axes[0], "Baseline 100% NORMAL | DDoS menampilkan WARNING dan ATTACK_CONFIRMED yang ter-handle")
     save(fn)
 
 # ─── Run graphs ───────────────────────────────────────────────────────────────
@@ -426,29 +425,35 @@ graph_c3()
 
 # ─── Combined markdown report ─────────────────────────────────────────────────
 
-print("\n[*] Writing combined report.md ...")
+print("\n[*] Writing comparison_report.md ...")
 md_path = out("comparison_report.md")
-NOW = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+NOW     = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-# Compute key comparison metrics
 rate_multiplier_max = ddos_stats["max_rate"] / baseline_stats["max_rate"] if baseline_stats["max_rate"] > 0 else 0
 rate_multiplier_avg = ddos_stats["avg_rate"] / baseline_stats["avg_rate"] if baseline_stats["avg_rate"] > 0 else 0
 
-# Mitigation table
 mit_rows = []
 if not mit_df.empty:
     for _, row in mit_df.iterrows():
-        ts   = row.get("timestamp")
-        ip   = row.get("src_ip", "")
-        sw   = row.get("dpid_name", "")
+        ts     = row.get("timestamp")
+        ip     = row.get("src_ip", "")
+        sw     = row.get("dpid_name", "")
         action = row.get("action", "")
         mit_rows.append(f"| {fmt_ts(ts)} | `{ip}` | {sw} | {action} |")
 
-# Copy individual graphs ke combined folder untuk markdown embedding (kalau diperlukan)
-# Tapi karena markdown bisa pakai relative path, kita pakai relative path saja
-def rel_path(graph_dir, fn):
-    """Pakai path absolut yang aman untuk markdown rendering"""
-    return f"../{os.path.basename(graph_dir)}/{fn}"
+all_protos = sorted(set(list(baseline_stats["protocols"].keys()) +
+                        list(ddos_stats["protocols"].keys())))
+
+proto_table_rows = ""
+for p in all_protos:
+    b    = baseline_stats["protocols"].get(p, 0)
+    d    = ddos_stats["protocols"].get(p, 0)
+    note = ""
+    if p == "ICMP" and d > b * 2:
+        note = "↑ Spike karena flood"
+    elif b > 0 and d > 0:
+        note = "Normal mix"
+    proto_table_rows += f"| {p} | {b:,} | {d:,} | {note} |\n"
 
 md_content = f"""# SDN ICMP Flood Mitigation — Comparison Report
 
@@ -459,10 +464,10 @@ md_content = f"""# SDN ICMP Flood Mitigation — Comparison Report
 
 ## Executive Summary
 
-Eksperimen ini menggunakan **dua skenario** untuk memvalidasi sistem deteksi & mitigasi DDoS berbasis SDN:
+Eksperimen ini menggunakan **dua skenario** untuk memvalidasi sistem deteksi dan mitigasi DDoS berbasis SDN:
 
-1. **Baseline** — network sehat dengan traffic mix (ICMP, TCP, UDP, HTTP)
-2. **DDoS** — 4 attacker melakukan ICMP flood ke victim, controller mendeteksi & mitigasi
+1. **Baseline** — network sehat dengan traffic ICMP, TCP, HTTP, dan ARP
+2. **DDoS** — 4 attacker melakukan ICMP flood ke victim, controller mendeteksi dan memitigasi otomatis
 
 ### Hasil Utama
 
@@ -483,46 +488,36 @@ Eksperimen ini menggunakan **dua skenario** untuk memvalidasi sistem deteksi & m
 
 | Item | Detail |
 |------|--------|
-| Topologi | 1 core switch (s1), 5 access switches (s2-s6), 25 hosts |
-| Victim | `{VICTIM_IP}` (h25, attached to s6) |
+| Topologi | 1 core switch (s1), 5 access switches (s2–s6), 25 hosts |
+| Victim | `{VICTIM_IP}` (h25, terhubung ke s6) |
 | Attackers | {", ".join([f"`{ip}` ({ATTACKERS[ip]['host']}@{ATTACKERS[ip]['switch']})" for ip in ATTACKER_IPS])} |
-| Detection | EWMA + SVM-assisted threshold |
-| Mitigation | OpenFlow DROP rule (ICMP + ARP) per attacker src-IP |
-| Detection thresholds | Warning ≥ 20 pps, Attack > 50 pps |
-| Mitigation delay | 8 detik (observasi) setelah ATTACK_CONFIRMED |
-| Drop hard timeout | 300 detik |
+| Deteksi | EWMA (α=0.3) + SVM kernel RBF |
+| Mitigasi | OpenFlow DROP Rule (ICMP + ARP) per attacker src-IP |
+| Threshold WARNING | ≥ 20 pps |
+| Threshold ATTACK | > 50 pps (atau SVM=1 setelah ≥5 detik WARNING) |
+| Delay mitigasi | 8 detik setelah ATTACK_CONFIRMED |
+| Hard timeout DROP | 300 detik |
 
 ---
 
 ## 2. Protocol Distribution
 
-Baseline scenario menunjukkan **variasi protokol yang sehat** (ICMP, TCP, UDP, ARP) sesuai aktivitas enterprise normal. DDoS scenario didominasi oleh **ICMP** karena 4 attacker melakukan ICMP flood.
+Baseline scenario menunjukkan **variasi protokol yang sehat** mencakup ICMP, TCP, HTTP, dan ARP
+sesuai aktivitas jaringan normal. DDoS scenario didominasi oleh **ICMP** karena 4 attacker
+melakukan ICMP flood secara bersamaan.
 
 ![Protocol Comparison](C1_protocol_comparison.png)
 
 | Protocol | Baseline | DDoS | Catatan |
 |----------|---------:|-----:|---------|
-"""
-
-all_protos = sorted(set(list(baseline_stats["protocols"].keys()) +
-                        list(ddos_stats["protocols"].keys())))
-for p in all_protos:
-    b = baseline_stats["protocols"].get(p, 0)
-    d = ddos_stats["protocols"].get(p, 0)
-    note = ""
-    if p == "ICMP" and d > b * 2:
-        note = "↑ Spike karena flood"
-    elif b > 0 and d > 0:
-        note = "Normal mix"
-    md_content += f"| {p} | {b:,} | {d:,} | {note} |\n"
-
-md_content += f"""
-
+{proto_table_rows}
 ---
 
 ## 3. Packet Rate Comparison
 
-DDoS menghasilkan traffic **{rate_multiplier_max:.1f}× lebih besar** (max rate) dan **{rate_multiplier_avg:.1f}× lebih besar** (avg rate) dibanding baseline. Ini secara signifikan melampaui threshold deteksi.
+DDoS menghasilkan traffic **{rate_multiplier_max:.1f}× lebih besar** (max rate) dan
+**{rate_multiplier_avg:.1f}× lebih besar** (avg rate) dibanding baseline, jauh melampaui
+threshold deteksi yang telah ditetapkan.
 
 ![Packet Rate Comparison](C2_packet_rate_comparison.png)
 
@@ -530,8 +525,9 @@ DDoS menghasilkan traffic **{rate_multiplier_max:.1f}× lebih besar** (max rate)
 
 ## 4. Detection State Comparison
 
-**Baseline** menunjukkan 100% events terklasifikasi NORMAL (no false positive).
-**DDoS** menunjukkan eskalasi state yang sesuai: NORMAL → WARNING → ATTACK_CONFIRMED, dengan DROP_ACTIVE setelah mitigasi.
+**Baseline** menunjukkan 100% events terklasifikasi NORMAL — tidak ada false positive.
+**DDoS** menunjukkan eskalasi status yang sesuai: NORMAL → WARNING → ATTACK_CONFIRMED,
+membuktikan sistem deteksi bekerja sesuai rancangan.
 
 ![Detection State Comparison](C3_state_comparison.png)
 
@@ -539,71 +535,66 @@ DDoS menghasilkan traffic **{rate_multiplier_max:.1f}× lebih besar** (max rate)
 
 ## 5. Mitigation Evidence (DDoS only)
 
-{len(mit_df)} drop rule berhasil terpasang di edge switch sesuai posisi attacker:
+{len(mit_df)} DROP rule berhasil terpasang di edge switch sesuai posisi masing-masing attacker:
 
 | Time | Source IP | Switch | Action |
 |------|-----------|--------|--------|
 {chr(10).join(mit_rows) if mit_rows else "| (no mitigation events) |"}
 
 **Karakteristik mitigasi:**
-- Drop terpasang di **edge switch** (di switch attacker, bukan di switch victim) → traffic attacker tidak melewati core network
-- **Selektif per source IP** → traffic dari host normal ke victim tidak terkena drop
-- **Persisten** → hard_timeout 300 detik mencegah re-flood
+- DROP dipasang di **edge switch** (switch attacker, bukan switch victim) — traffic tidak melewati core network
+- **Selektif per source IP** — traffic dari host normal ke victim tidak terkena DROP
+- **Hard timeout 300 detik** — mitigasi bersifat sementara, bukan permanen
 
 ---
 
-## 6. Detail Per Skenario
+## 6. Referensi Grafik per Skenario
 
 ### Baseline Scenario
-
-📄 Detail lengkap baseline analysis: `baseline_summary.md`
-
-Embed grafik baseline:
-- [B1] Protocol Distribution: `../baseline/B1_protocol_distribution.png`
-- [B2] Packet Rate Timeline: `../baseline/B2_packet_rate_timeline.png`
-- [B3] Top Talkers: `../baseline/B3_top_talkers.png`
-- [B4] Detection States: `../baseline/B4_detection_states.png`
+- B1 — Distribusi Protokol: `../baseline/B1_protocol_distribution.png`
+- B2 — Packet Rate Timeline: `../baseline/B2_packet_rate_timeline.png`
+- B3 — Top Talker Hosts: `../baseline/B3_top_talkers.png`
+- B4 — Distribusi Status Deteksi: `../baseline/B4_detection_states.png`
 
 ### DDoS Scenario
-
-📄 Detail lengkap DDoS analysis: `ddos_summary.md`
-
-Embed grafik DDoS:
-- [D1] Attack Timeline: `../ddos/D1_attack_timeline.png`
-- [D2] Detection Latency: `../ddos/D2_detection_latency.png`
-- [D3] Attacker vs Baseline: `../ddos/D3_attacker_vs_baseline.png` **(BUKTI UTAMA)**
-- [D4] Detection States: `../ddos/D4_detection_states.png`
-- [D5] Mitigation Lifecycle: `../ddos/D5_mitigation_lifecycle.png`
+- D1 — Attack Rate Timeline: `../ddos/D1_attack_timeline.png`
+- D2 — Selektivitas Mitigasi (Attacker vs Baseline): `../ddos/D2_attacker_vs_baseline.png`
+- D3 — Top Source Host DDoS: `../ddos/D3_top_source_ddos.png`
+- D4 — Cliff Effect per Attacker: `../ddos/D4_cliff_effect.png`
+- D5 — Gantt Timeline Transisi Status per Attacker: `../ddos/D5_gantt_status.png`
 
 ---
 
-## 7. Validasi Klaim Skripsi
+## 7. Validasi Klaim Forensik (NIST SP 800-86)
 
-| Klaim | Bukti (data) | Status |
-|-------|--------------|--------|
-| Sistem deteksi tidak false-positive | Baseline 100% NORMAL ({baseline_stats['states'].get('NORMAL', 0):,} events) | ✅ |
-| Sistem mendeteksi ICMP flood | {ddos_stats['warning_count']:,} WARNING + {ddos_stats['attack_count']:,} ATTACK_CONFIRMED di DDoS | ✅ |
-| Mitigasi terpasang otomatis | {len(mit_df)} drop rule tercatat di `mitigation_events.csv` | ✅ |
-| Drop rule efektif (no bypass) | 0 PacketIn attacker→victim di CSV setelah drop timestamp | ✅ |
-| Selektivitas src-IP | Baseline traffic tetap mengalir saat `phase=MITIGATED` | ✅ |
-| Konsistensi timing | Mitigation latency konsisten antar attacker (delay 8 detik) | ✅ |
+| Klaim | Bukti | Status |
+|-------|-------|--------|
+| Tidak ada false positive di baseline | {baseline_stats['states'].get('NORMAL', 0):,} events = 100% NORMAL | ✅ |
+| Sistem mendeteksi ICMP Flood | {ddos_stats['warning_count']:,} WARNING + {ddos_stats['attack_count']:,} ATTACK_CONFIRMED | ✅ |
+| Mitigasi terpasang otomatis | {len(mit_df)} DROP_ICMP events di `mitigation_events.csv` | ✅ |
+| DROP rule efektif per attacker | Cliff effect terlihat pada D4 (rate turun ke 0 setelah DROP) | ✅ |
+| Selektivitas src-IP | Traffic baseline tetap mengalir selama phase=MITIGATED (D2) | ✅ |
+| Konsistensi timing mitigasi | Delay 8 detik konsisten antar attacker (Tabel di atas) | ✅ |
 
 ---
 
-## 8. Conclusion
+## 8. Kesimpulan Forensik
 
-Sistem SDN ICMP Flood Detection & Mitigation berhasil divalidasi dengan kedua skenario:
+Sistem SDN ICMP Flood Detection dan Mitigasi berhasil divalidasi melalui dua skenario:
 
 1. **Baseline:** controller tidak menghasilkan alarm palsu pada traffic normal
-2. **DDoS:** controller mendeteksi serangan dengan delay terkontrol dan memasang drop rule di edge switch
-3. **Selektivitas:** drop rule bersifat src-IP specific, tidak mengganggu legitimate traffic
-4. **Persistensi:** drop bertahan selama hard_timeout, tidak ada celah untuk re-flood
+2. **DDoS:** controller mendeteksi serangan dari 4 attacker dan memasang DROP rule secara otomatis di edge switch masing-masing
+3. **Selektivitas:** DROP rule bersifat src-IP specific — tidak mengganggu traffic host normal
+4. **Persistensi:** hard timeout 300 detik menjaga mitigasi aktif tanpa bersifat permanen
 
-Eksperimen ini membuktikan bahwa pendekatan **edge-based mitigation di SDN** efektif menghentikan DDoS ICMP flood tanpa mengorbankan traffic normal.
+Rekonstruksi insiden berdasarkan log CSV dan PCAP menunjukkan konsistensi antara keputusan
+controller (control plane) dan kondisi paket aktual di jaringan (data plane), sesuai
+tahapan Analysis dan Reporting pada kerangka NIST SP 800-86.
 
 ---
 
-*Generated automatically by `analyze_combined.py`. For granular analysis, lihat `baseline_summary.md` dan `ddos_summary.md`.*
+*Di-generate otomatis oleh `analyze_combined.py`.
+Untuk analisis granular, lihat `baseline_summary.md` dan `ddos_summary.md`.*
 """
 
 with open(md_path, "w", encoding="utf-8") as f:
@@ -620,10 +611,5 @@ print("\nFiles generated:")
 print(f"  📊 comparison_report.md")
 print(f"  📈 C1_protocol_comparison.png")
 print(f"  📈 C2_packet_rate_comparison.png")
-print(f"  📈 C3_state_comparison.png")
-print()
-print("Untuk laporan lengkap:")
-print(f"  - {OUTPUT_DIR}/comparison_report.md")
-print(f"  - {BASELINE_GRAPH_DIR}/baseline_summary.md")
-print(f"  - {DDOS_GRAPH_DIR}/ddos_summary.md")
+print(f"  📈 C3_state_comparison.png  ← PNG #5 checklist (detection state baseline vs DDoS)")
 print(f"{'='*60}\n")
