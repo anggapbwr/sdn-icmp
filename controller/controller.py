@@ -101,12 +101,12 @@ class MonitorSwitch13(app_manager.RyuApp):
         self.confirmation_seconds         = 5.0
         self.mitigation_delay_after_alert = 8.0
 
-        self.ewma_alpha = 0.3
-        self.ewma_rates = defaultdict(float)
-
         # UPDATED: flag skenario "DDoS tanpa mitigasi" — set via env var
         # Jalankan dengan: DISABLE_MITIGATION=1 ryu-manager controller/controller.py
-        self.disable_mitigation = os.environ.get("DISABLE_MITIGATION", "0") == "1"
+
+        self.disable_mitigation = os.getenv("DISABLE_MITIGATION", "0").lower() in ("1", "true", "yes", "on")
+        self.ewma_alpha = 0.3
+        self.ewma_rates = defaultdict(float)
 
         self.alert_log_interval    = 0.025
         self.warning_log_interval  = 0.1
@@ -398,10 +398,16 @@ class MonitorSwitch13(app_manager.RyuApp):
             return 0
 
     def _apply_prediction_guard(self, svm_prediction, packet_rate):
-        if packet_rate < self.warning_rate_threshold: return 0
-        if self.model is None:
-            return 1 if packet_rate >= self.attack_rate_threshold else 0
-        return int(svm_prediction)
+         if packet_rate < self.warning_rate_threshold:
+             return 0
+
+         if packet_rate >= self.attack_rate_threshold:
+             return 1
+
+         if self.model is None:
+             return 0
+
+         return int(svm_prediction)
 
     def _get_session_id(self, src_ip, dst_ip, protocol_name="", src_port="", dst_port=""):
         if protocol_name in ["TCP","UDP"] and src_port and dst_port:
@@ -458,10 +464,10 @@ class MonitorSwitch13(app_manager.RyuApp):
             if packet_rate >= 40: return 25
             if packet_rate >= 20: return 12
             return 5
-        if packet_rate >= 350: return 95
-        if packet_rate >= 250: return 85
-        if packet_rate >= 150: return 70
-        if packet_rate >= 100: return 55
+        if packet_rate >= 120: return 95
+        if packet_rate >= 100: return 85
+        if packet_rate >= 80: return 70
+        if packet_rate >= 50: return 55
         return 40
 
     def _get_attack_type(self, protocol_name, final_prediction, mitigation_active):
@@ -553,6 +559,9 @@ class MonitorSwitch13(app_manager.RyuApp):
         return state
 
     def _should_activate_mitigation(self, session_id):
+        if self.disable_mitigation:
+            return False
+
         state = self.session_detection_state[session_id]
         if state["status"] != "ATTACK_CONFIRMED":      return False
         if state["alert_first_seen"] is None:          return False
@@ -1000,8 +1009,12 @@ class MonitorSwitch13(app_manager.RyuApp):
 
         elif detection_status == "ATTACK_CONFIRMED":
             if self._should_log_alert(src_ip):
-                countdown  = self._get_countdown_seconds(session_id)
-                status_txt = f"MITIGATING_IN_{countdown}s" if countdown > 0 else "ACTIVATING_DROP"
+                if self.disable_mitigation:
+                    status_txt = "MITIGATION_DISABLED"
+                else:
+                    countdown  = self._get_countdown_seconds(session_id)
+                    status_txt = f"MITIGATING_IN_{countdown}s" if countdown > 0 else "ACTIVATING_DROP"
+
                 self._alert(
                     f"ICMP FLOOD | {src_ip} → {dst_ip} | "
                     f"{logged_packet_rate:.2f}pps | Risk={risk_emoji}{threat_score} | "
@@ -1013,11 +1026,10 @@ class MonitorSwitch13(app_manager.RyuApp):
 
         elif detection_status == "WARNING":
             if self._should_log_warning(src_ip):
-                ratio = packet_rate / self.warning_rate_threshold
                 self._warn(
                     f"ICMP SUSPECT | {src_ip} → {dst_ip} | "
-                    f"{logged_packet_rate:.2f}pps | Ratio={ratio:.1f}x | "
-                    f"Risk={risk_emoji}{threat_score} | MONITORING"
+                    f"{logged_packet_rate:.2f}pps | Risk={risk_emoji}{threat_score} | "
+                    f"MONITORING"
                 )
 
         else:
