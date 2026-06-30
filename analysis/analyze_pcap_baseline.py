@@ -19,7 +19,6 @@ Usage:
 import os
 import sys
 import subprocess
-from collections import Counter, defaultdict
 from datetime import datetime
 import warnings
 warnings.filterwarnings("ignore")
@@ -41,22 +40,22 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ─── Topology ─────────────────────────────────────────────────────────────────
 
-VICTIM_IP = "10.0.0.25"
+VICTIM_IP    = "10.0.0.25"
 ATTACKER_IPS = ["10.0.0.1", "10.0.0.7", "10.0.0.13", "10.0.0.18"]
 
 # ─── Style ────────────────────────────────────────────────────────────────────
 
 PALETTE = {
-    "icmp":     "#4A90D9",
-    "tcp":      "#27AE60",
-    "udp":      "#F5A623",
-    "arp":      "#8E44AD",
-    "other":    "#95A5A6",
-    "normal":   "#4A90D9",
-    "attack":   "#E05C5C",
-    "text":     "#2C3E50",
-    "sub":      "#7F8C8D",
-    "grid":     "#ECEFF1",
+    "icmp":   "#4A90D9",
+    "tcp":    "#27AE60",
+    "udp":    "#F5A623",
+    "arp":    "#8E44AD",
+    "other":  "#95A5A6",
+    "normal": "#4A90D9",
+    "attack": "#E05C5C",
+    "text":   "#2C3E50",
+    "sub":    "#7F8C8D",
+    "grid":   "#ECEFF1",
 }
 
 PROTOCOL_COLORS = {
@@ -111,23 +110,20 @@ def check_tshark():
         return False
 
 def tshark_extract(pcap, fields, display_filter=""):
-    """Extract fields dari pcap pakai tshark. Returns list of dicts."""
     cmd = ["tshark", "-r", pcap, "-T", "fields"]
     for f in fields:
         cmd += ["-e", f]
     cmd += ["-E", "separator=|", "-E", "occurrence=f"]
     if display_filter:
         cmd += ["-Y", display_filter]
-
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
             print(f"  [!] tshark error: {result.stderr[:200]}")
             return []
     except subprocess.TimeoutExpired:
-        print(f"  [!] tshark timeout (>300s) — pcap terlalu besar")
+        print(f"  [!] tshark timeout (>300s)")
         return []
-
     rows = []
     for line in result.stdout.strip().split("\n"):
         if not line:
@@ -139,7 +135,6 @@ def tshark_extract(pcap, fields, display_filter=""):
     return rows
 
 def classify_protocol(row):
-    """Classify packet sebagai ICMP/TCP/UDP/ARP/OTHER."""
     if row.get("arp.opcode"):
         return "ARP"
     proto_num = row.get("ip.proto", "")
@@ -152,7 +147,6 @@ def classify_protocol(row):
     return "OTHER"
 
 def ip_to_host(ip):
-    """Map IP to host name (10.0.0.X → hX)."""
     if not ip or "." not in ip:
         return "unknown"
     try:
@@ -200,9 +194,8 @@ if not rows:
 records = []
 for r in rows:
     proto = classify_protocol(r)
-    # Pakai ip.src/dst, fallback ke arp.src.proto_ipv4 untuk ARP
-    src = r.get("ip.src") or r.get("arp.src.proto_ipv4") or ""
-    dst = r.get("ip.dst") or r.get("arp.dst.proto_ipv4") or ""
+    src   = r.get("ip.src") or r.get("arp.src.proto_ipv4") or ""
+    dst   = r.get("ip.dst") or r.get("arp.dst.proto_ipv4") or ""
     try:
         ts = float(r.get("frame.time_epoch", "0"))
     except (ValueError, TypeError):
@@ -211,28 +204,22 @@ for r in rows:
         size = int(r.get("frame.len", "0"))
     except (ValueError, TypeError):
         size = 0
-    records.append({
-        "timestamp": ts,
-        "size":      size,
-        "src":       src,
-        "dst":       dst,
-        "protocol":  proto,
-    })
+    records.append({"timestamp": ts, "size": size,
+                    "src": src, "dst": dst, "protocol": proto})
 
-df = pd.DataFrame(records)
-df["datetime"] = pd.to_datetime(df["timestamp"], unit="s")
-df["src_host"] = df["src"].apply(ip_to_host)
-df["dst_host"] = df["dst"].apply(ip_to_host)
+df           = pd.DataFrame(records)
+df["datetime"]  = pd.to_datetime(df["timestamp"], unit="s")
+df["src_host"]  = df["src"].apply(ip_to_host)
+df["dst_host"]  = df["dst"].apply(ip_to_host)
 
 # ─── Stats ────────────────────────────────────────────────────────────────────
 
-total_pkts = len(df)
-total_bytes = df["size"].sum()
-duration = df["timestamp"].max() - df["timestamp"].min()
+total_pkts   = len(df)
+total_bytes  = df["size"].sum()
+duration     = df["timestamp"].max() - df["timestamp"].min()
 proto_counts = df["protocol"].value_counts().to_dict()
-host_counts = df["src"].value_counts().to_dict()
-avg_rate = total_pkts / duration if duration > 0 else 0
-avg_size = df["size"].mean()
+avg_rate     = total_pkts / duration if duration > 0 else 0
+avg_size     = df["size"].mean()
 
 print("\n[*] PCAP Summary:")
 print(f"    Total packets        : {total_pkts:,}")
@@ -256,7 +243,6 @@ def graph_pb1():
     sizes  = list(proto_counts.values())
     colors = [PROTOCOL_COLORS.get(p, PALETTE["other"]) for p in labels]
 
-    # Pie
     ax1 = axes[0]
     wedges, texts, autotexts = ax1.pie(
         sizes, labels=labels, colors=colors, autopct='%1.1f%%',
@@ -268,8 +254,7 @@ def graph_pb1():
         autotext.set_fontweight('bold')
     ax1.set_title("Komposisi Protokol (PCAP)")
 
-    # Bar
-    ax2 = axes[1]
+    ax2  = axes[1]
     bars = ax2.bar(labels, sizes, color=colors, width=0.5,
                    zorder=3, edgecolor="white", linewidth=1.2)
     for bar, val in zip(bars, sizes):
@@ -284,7 +269,9 @@ def graph_pb1():
 
     fig.suptitle("Baseline PCAP — Distribusi Protokol (Data Plane)",
                  fontsize=14, fontweight="bold", y=1.02)
-    subtitle(axes[0], "Sumber: network_baseline.pcap | Validasi variasi traffic dari sisi network")
+    # DIUPDATE: hapus sebutan UDP, sesuai traffic yang benar-benar dijalankan
+    subtitle(axes[0], "Sumber: network_baseline.pcap | "
+                      "Validasi variasi traffic ICMP, TCP, HTTP, ARP dari sisi network")
     save(fn)
 
 # ─── Graph PB2: Per-Host Traffic ──────────────────────────────────────────────
@@ -294,16 +281,16 @@ def graph_pb2():
     if df.empty or "src" not in df.columns:
         print(f"  [!] Skip {fn}: no host data"); return
 
-    top_n = 10
+    top_n  = 10
     counts = df["src"].value_counts().head(top_n)
     if counts.empty:
         return
 
     fig, ax = plt.subplots(figsize=(13, 6))
-    labels = counts.index.tolist()
-    values = counts.values
-
-    bar_colors = [PALETTE["attack"] if ip in ATTACKER_IPS else PALETTE["normal"] for ip in labels]
+    labels      = counts.index.tolist()
+    values      = counts.values
+    bar_colors  = [PALETTE["attack"] if ip in ATTACKER_IPS else PALETTE["normal"]
+                   for ip in labels]
     host_labels = [f"{ip_to_host(ip)} ({ip})" for ip in labels]
 
     bars = ax.barh(host_labels[::-1], values[::-1], color=bar_colors[::-1],
@@ -315,7 +302,7 @@ def graph_pb2():
                 fontsize=10, fontweight="bold", color=PALETTE["text"])
 
     ax.set_title(f"Baseline PCAP — Top {top_n} Source Hosts (by Packet Count)")
-    subtitle(ax, "Distribusi traffic dari data plane. Merah = host yang nanti jadi attacker (saat ini behavior normal)")
+    subtitle(ax, "Merah = host yang nanti jadi attacker di skenario DDoS (saat ini behavior normal)")
     ax.set_xlabel("Jumlah Paket")
     ax.set_xlim(0, max(values) * 1.15)
     ax.set_axisbelow(True)
@@ -336,13 +323,12 @@ def graph_pb3():
 
     fig, ax = plt.subplots(figsize=(15, 6))
 
-    # Per-protocol rate per 2 seconds
     for proto in proto_counts.keys():
         sub = df[df["protocol"] == proto].copy()
         if sub.empty:
             continue
         sub.set_index("datetime", inplace=True)
-        rate = sub["size"].resample("2S").count().fillna(0) / 2.0  # pps
+        rate = sub["size"].resample("2S").count().fillna(0) / 2.0
         if rate.empty:
             continue
         ax.plot(rate.index, rate.values,
@@ -350,7 +336,7 @@ def graph_pb3():
                 linewidth=1.5, alpha=0.85, label=proto, marker="o", markersize=3)
 
     ax.set_title("Baseline PCAP — Packet Rate Timeline per Protokol (Data Plane)")
-    subtitle(ax, "Binned 2 detik | Bukti traffic stabil & rendah di seluruh sesi")
+    subtitle(ax, "Binned 2 detik | Traffic stabil dan rendah sepanjang sesi — bukti network sehat")
     ax.set_xlabel("Time")
     ax.set_ylabel("Packets per Second")
     ax.tick_params(axis="x", rotation=30)
@@ -367,8 +353,7 @@ def graph_pb4():
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
-    # Left: histogram all packets
-    ax1 = axes[0]
+    ax1   = axes[0]
     sizes = df["size"].values
     ax1.hist(sizes, bins=50, color=PALETTE["normal"],
              edgecolor="white", alpha=0.85, zorder=3)
@@ -382,10 +367,8 @@ def graph_pb4():
     ax1.legend()
     ax1.set_axisbelow(True)
 
-    # Right: box plot per protocol
     ax2 = axes[1]
-    proto_sizes = []
-    proto_labels = []
+    proto_sizes, proto_labels = [], []
     for proto in sorted(proto_counts.keys()):
         s = df[df["protocol"] == proto]["size"].values
         if len(s) > 0:
@@ -404,7 +387,7 @@ def graph_pb4():
 
     fig.suptitle("Baseline PCAP — Packet Size Analysis",
                  fontsize=14, fontweight="bold", y=1.02)
-    subtitle(axes[0], "Distribusi ukuran paket dari pcap. ICMP biasanya 74-98 B, TCP/UDP bervariasi sesuai payload.")
+    subtitle(axes[0], "ICMP biasanya 74–98 B | TCP/UDP bervariasi sesuai payload")
     save(fn)
 
 # ─── Run graphs ───────────────────────────────────────────────────────────────
@@ -419,9 +402,8 @@ graph_pb4()
 
 print("\n[*] Writing baseline_pcap_summary.md ...")
 md_path = out("baseline_pcap_summary.md")
-NOW = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+NOW     = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-# Build tables
 proto_rows = []
 for proto, count in sorted(proto_counts.items(), key=lambda x: -x[1]):
     pct = 100 * count / total_pkts
@@ -463,7 +445,8 @@ md_content = f"""# Baseline PCAP — Forensic Analysis Report
 
 ## 2. Protocol Distribution (Data Plane)
 
-PCAP menunjukkan variasi protokol yang konsisten dengan baseline scenario yang dirancang (ping, TCP transfer, UDP transfer, HTTP, ARP discovery).
+PCAP menunjukkan variasi protokol yang konsisten dengan skenario baseline yang dirancang,
+mencakup ping ICMP, TCP transfer, HTTP request, dan ARP discovery.
 
 | Protocol | Packets | Percentage |
 |----------|---------|------------|
@@ -481,7 +464,8 @@ Top 10 source host paling aktif:
 |--------|---------|--------|
 {chr(10).join(host_rows)}
 
-> **Bukti behavior normal**: Host yang nanti jadi attacker (`h1`, `h7`, `h13`, `h18`) di baseline ini menunjukkan paket count **proporsional** dengan host normal — tidak ada dominasi yang mencurigakan.
+> Host yang nanti jadi attacker (`h1`, `h7`, `h13`, `h18`) di baseline ini menunjukkan
+> paket count **proporsional** dengan host normal — tidak ada dominasi yang mencurigakan.
 
 ![Per-Host Traffic](PB2_per_host_traffic.png)
 
@@ -489,7 +473,8 @@ Top 10 source host paling aktif:
 
 ## 4. Rate Timeline (Data Plane)
 
-Packet rate stabil di kisaran rendah sepanjang sesi capture. Tidak ada spike yang mengindikasikan flood attempt.
+Packet rate stabil di kisaran rendah sepanjang sesi capture.
+Tidak ada spike yang mengindikasikan flood attempt.
 
 ![Rate Timeline](PB3_rate_timeline.png)
 
@@ -498,9 +483,8 @@ Packet rate stabil di kisaran rendah sepanjang sesi capture. Tidak ada spike yan
 ## 5. Packet Size Analysis
 
 Distribusi ukuran paket konsisten dengan traffic mix normal:
-- **ICMP**: biasanya 74-98 bytes (echo request/reply standar)
+- **ICMP**: biasanya 74–98 bytes (echo request/reply standar)
 - **TCP**: bervariasi (handshake kecil + data payload sesuai transfer)
-- **UDP**: bervariasi sesuai payload
 - **ARP**: 42 bytes (fixed size)
 
 Rata-rata ukuran paket: **{avg_size:.1f} bytes** (Median: **{df['size'].median():.0f} bytes**).
@@ -511,10 +495,12 @@ Rata-rata ukuran paket: **{avg_size:.1f} bytes** (Median: **{df['size'].median()
 
 ## 6. Forensic Findings
 
-1. **Network baseline terbukti sehat dari sisi data plane** — {total_pkts:,} paket dengan rate stabil {avg_rate:.2f} pps
-2. **Variasi protokol konsisten** — {", ".join(proto_counts.keys())} hadir sesuai skenario traffic mix
+1. **Network baseline terbukti sehat dari sisi data plane** — {total_pkts:,} paket,
+   rate stabil {avg_rate:.2f} pps
+2. **Variasi protokol konsisten** — {", ".join(proto_counts.keys())} hadir sesuai skenario
 3. **Tidak ada flood signature** — tidak ada host yang dominan dengan rate abnormal
-4. **Future attackers berperilaku normal** — h1, h7, h13, h18 paket count sebanding dengan normal hosts
+4. **Future attackers berperilaku normal** — h1, h7, h13, h18 paket count
+   sebanding dengan host normal
 5. **Validasi cross-plane** — PCAP (data plane) konsisten dengan CSV controller (control plane)
 
 ---
@@ -529,7 +515,8 @@ Rata-rata ukuran paket: **{avg_size:.1f} bytes** (Median: **{df['size'].median()
 
 ---
 
-*Report ini di-generate otomatis dari `analyze_pcap_baseline.py`. Untuk analisis DDoS PCAP, lihat `ddos_pcap_summary.md`.*
+*Report ini di-generate otomatis dari `analyze_pcap_baseline.py`.
+Untuk analisis DDoS PCAP, lihat `ddos_pcap_summary.md`.*
 """
 
 with open(md_path, "w", encoding="utf-8") as f:
