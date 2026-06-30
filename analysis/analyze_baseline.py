@@ -154,7 +154,6 @@ unique_dst = df["dst_ip"].nunique()
 protocol_counts = df["protocol_name"].value_counts().to_dict()
 detection_counts = df["detection_status"].value_counts().to_dict()
 
-# Cek ada anomaly atau tidak
 warning_count   = detection_counts.get("WARNING", 0)
 attack_count    = detection_counts.get("ATTACK_CONFIRMED", 0)
 drop_count      = detection_counts.get("DROP_ACTIVE", 0)
@@ -164,14 +163,14 @@ avg_rate = df["packet_rate"].mean() if "packet_rate" in df.columns else 0
 max_rate = df["packet_rate"].max() if "packet_rate" in df.columns else 0
 
 stats = {
-    "Total events":            len(df),
-    "Duration (seconds)":      round(duration, 2),
-    "Unique source hosts":     unique_src,
+    "Total events":             len(df),
+    "Duration (seconds)":       round(duration, 2),
+    "Unique source hosts":      unique_src,
     "Unique destination hosts": unique_dst,
-    "Average packet rate":     round(float(avg_rate), 2),
-    "Max packet rate":         round(float(max_rate), 2),
-    "Protocols seen":          ", ".join(protocol_counts.keys()),
-    "Status":                  "CLEAN (no anomaly)" if is_clean else "ANOMALY DETECTED",
+    "Average packet rate":      round(float(avg_rate), 2),
+    "Max packet rate":          round(float(max_rate), 2),
+    "Protocols seen":           ", ".join(protocol_counts.keys()),
+    "Status":                   "CLEAN (no anomaly)" if is_clean else "ANOMALY DETECTED",
 }
 
 print("\n[*] Summary:")
@@ -187,10 +186,9 @@ def graph_b1():
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
-    # Pie chart kiri
     ax1 = axes[0]
     labels = list(protocol_counts.keys())
-    sizes = list(protocol_counts.values())
+    sizes  = list(protocol_counts.values())
     colors = [PROTOCOL_COLORS.get(p, PALETTE["other"]) for p in labels]
 
     wedges, texts, autotexts = ax1.pie(
@@ -203,7 +201,6 @@ def graph_b1():
         autotext.set_fontweight('bold')
     ax1.set_title("Komposisi Protokol")
 
-    # Bar chart kanan
     ax2 = axes[1]
     bars = ax2.bar(labels, sizes, color=colors, width=0.5,
                    zorder=3, edgecolor="white", linewidth=1.2)
@@ -219,7 +216,8 @@ def graph_b1():
 
     fig.suptitle("Baseline — Distribusi Protokol Network",
                  fontsize=14, fontweight="bold", y=1.02)
-    subtitle(axes[0], "Network sehat dengan variasi traffic ICMP, TCP, UDP, ARP")
+    # DIUPDATE: hapus sebutan UDP, sesuai traffic yang benar-benar dijalankan
+    subtitle(axes[0], "Network sehat dengan variasi traffic ICMP, TCP, HTTP, dan ARP")
     save(fn)
 
 # ─── Graph B2: Packet Rate Timeline per Protocol ──────────────────────────────
@@ -232,10 +230,10 @@ def graph_b2():
     fig, ax = plt.subplots(figsize=(15, 6))
 
     for proto in protocol_counts.keys():
-        sub = df[df["protocol_name"] == proto].dropna(subset=["timestamp", "packet_rate"]).sort_values("timestamp")
+        sub = df[df["protocol_name"] == proto].dropna(
+            subset=["timestamp", "packet_rate"]).sort_values("timestamp")
         if sub.empty:
             continue
-        # Bin per 2 detik supaya smooth
         sub = sub.set_index("timestamp")
         rate_binned = sub["packet_rate"].resample("2S").mean().fillna(0)
         if rate_binned.empty:
@@ -260,7 +258,7 @@ def graph_b3():
     if "src_ip" not in df.columns:
         print(f"  [!] Skip {fn}: missing src_ip"); return
 
-    top_n = 10
+    top_n  = 10
     counts = df["src_ip"].value_counts().head(top_n)
     if counts.empty:
         print(f"  [!] Skip {fn}: no source data"); return
@@ -269,7 +267,6 @@ def graph_b3():
     labels = counts.index.tolist()
     values = counts.values
 
-    # Highlight attacker hosts berbeda warna (untuk konteks, walau di baseline harusnya tidak menonjol)
     bar_colors = [PALETTE["attack"] if ip in ATTACKER_IPS else PALETTE["normal"] for ip in labels]
 
     bars = ax.barh(labels[::-1], values[::-1], color=bar_colors[::-1],
@@ -281,7 +278,7 @@ def graph_b3():
                 fontsize=10, fontweight="bold", color=PALETTE["text"])
 
     ax.set_title(f"Baseline — Top {top_n} Talker Hosts (by Event Count)")
-    subtitle(ax, "Distribusi traffic per host. Merah = host yang nanti jadi attacker di skenario DDoS (di baseline behavior normal)")
+    subtitle(ax, "Merah = host yang nanti jadi attacker di skenario DDoS (di baseline behavior normal)")
     ax.set_xlabel("Jumlah Events")
     ax.set_xlim(0, max(values) * 1.15)
     ax.set_axisbelow(True)
@@ -300,7 +297,7 @@ def graph_b4():
     if "detection_status" not in df.columns:
         print(f"  [!] Skip {fn}: missing detection_status"); return
 
-    order = ["NORMAL", "WARNING", "ATTACK_CONFIRMED", "DROP_ACTIVE"]
+    order     = ["NORMAL", "WARNING", "ATTACK_CONFIRMED", "DROP_ACTIVE"]
     color_map = {
         "NORMAL":           PALETTE["normal"],
         "WARNING":          PALETTE["warning"],
@@ -326,7 +323,7 @@ def graph_b4():
                 f"{val:,}\n({pct:.1f}%)", ha="center", va="bottom",
                 fontsize=10, fontweight="bold", color=PALETTE["text"])
 
-    ax.set_title("Baseline — Detection State Distribution")
+    ax.set_title("Baseline — Distribusi Status Deteksi")
     if is_clean:
         sub_text = "100% NORMAL — tidak ada deteksi anomaly (sesuai ekspektasi network sehat)"
     else:
@@ -350,20 +347,18 @@ graph_b4()
 
 print("\n[*] Writing baseline_summary.md ...")
 md_path = out("baseline_summary.md")
-NOW = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+NOW      = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 start_ts = df["timestamp"].min().strftime("%Y-%m-%d %H:%M:%S") if not df.empty else "N/A"
 end_ts   = df["timestamp"].max().strftime("%Y-%m-%d %H:%M:%S") if not df.empty else "N/A"
 
-# Buat protocol breakdown table
 proto_lines = []
 total_events = len(df)
 for proto, count in sorted(protocol_counts.items(), key=lambda x: -x[1]):
     pct = 100 * count / total_events
     proto_lines.append(f"| {proto} | {count:,} | {pct:.1f}% |")
 
-# Top talker table
-top_talkers = df["src_ip"].value_counts().head(5)
+top_talkers      = df["src_ip"].value_counts().head(5)
 top_talker_lines = []
 for ip, count in top_talkers.items():
     is_atk = "⚠️ (future attacker)" if ip in ATTACKER_IPS else "✅ normal"
@@ -406,7 +401,8 @@ md_content = f"""# Baseline Scenario — Analysis Report
 
 ## 3. Protocol Distribution
 
-Network baseline menunjukkan **variasi protokol yang sehat** sesuai aktivitas enterprise normal (ping, TCP transfer, UDP transfer, HTTP request, ARP discovery).
+Network baseline menunjukkan **variasi protokol yang sehat** sesuai aktivitas jaringan normal,
+mencakup ping ICMP, TCP transfer, HTTP request, dan ARP discovery.
 
 | Protocol | Events | Percentage |
 |----------|--------|------------|
@@ -424,7 +420,8 @@ Network baseline menunjukkan **variasi protokol yang sehat** sesuai aktivitas en
 |---------|-------------|--------|
 {chr(10).join(top_talker_lines)}
 
-> Host yang menjadi attacker di skenario DDoS (h1, h7, h13, h18) di baseline ini menunjukkan **behavior normal** — terlibat di traffic ping standar saat `pingall`, tidak ada anomaly.
+> Host yang menjadi attacker di skenario DDoS (h1, h7, h13, h18) di baseline ini menunjukkan
+> **behavior normal** — terlibat di traffic ping standar saat `pingall`, tidak ada anomaly.
 
 ![Top Talkers](B3_top_talkers.png)
 
@@ -432,7 +429,8 @@ Network baseline menunjukkan **variasi protokol yang sehat** sesuai aktivitas en
 
 ## 5. Packet Rate Over Time
 
-Packet rate stabil dan rendah sepanjang sesi capture, dengan rata-rata **{avg_rate:.2f} pps** dan maksimum **{max_rate:.2f} pps**. Tidak ada spike yang mengindikasikan flood.
+Packet rate stabil dan rendah sepanjang sesi capture, dengan rata-rata **{avg_rate:.2f} pps**
+dan maksimum **{max_rate:.2f} pps**. Tidak ada spike yang mengindikasikan flood.
 
 ![Packet Rate Timeline](B2_packet_rate_timeline.png)
 
@@ -440,7 +438,8 @@ Packet rate stabil dan rendah sepanjang sesi capture, dengan rata-rata **{avg_ra
 
 ## 6. Detection State Verification
 
-Controller berhasil mengklasifikasikan **{100 * detection_counts.get('NORMAL', 0) / total_events:.1f}%** traffic sebagai NORMAL, yang berarti detection engine bekerja dengan benar (no false positives di kondisi sehat).
+Controller berhasil mengklasifikasikan **{100 * detection_counts.get('NORMAL', 0) / total_events:.1f}%**
+traffic sebagai NORMAL, membuktikan tidak ada false positive pada kondisi network sehat.
 
 ![Detection States](B4_detection_states.png)
 
@@ -456,7 +455,9 @@ Controller berhasil mengklasifikasikan **{100 * detection_counts.get('NORMAL', 0
 
 ---
 
-*Report ini di-generate otomatis dari `analyze_baseline.py`. Untuk skenario DDoS, lihat `ddos_summary.md`. Untuk perbandingan komprehensif, lihat `combined_report.md`.*
+*Report ini di-generate otomatis dari `analyze_baseline.py`.
+Untuk skenario DDoS, lihat `ddos_summary.md`.
+Untuk perbandingan komprehensif, lihat `combined_report.md`.*
 """
 
 with open(md_path, "w", encoding="utf-8") as f:
