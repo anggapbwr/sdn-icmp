@@ -96,8 +96,8 @@ class MonitorSwitch13(app_manager.RyuApp):
         self.datapaths   = {}
 
         self.rate_window_seconds          = 1.0
-        self.warning_rate_threshold       = 20.0
-        self.attack_rate_threshold        = 50.0
+        self.warning_rate_threshold       = 10.0
+        self.attack_rate_threshold        = 25.0
         self.confirmation_seconds         = 5.0
         self.mitigation_delay_after_alert = 8.0
 
@@ -108,10 +108,10 @@ class MonitorSwitch13(app_manager.RyuApp):
         self.ewma_alpha = 0.3
         self.ewma_rates = defaultdict(float)
 
-        self.alert_log_interval    = 0.025
-        self.warning_log_interval  = 0.1
-        self.info_log_interval     = 2.0
-        self.drop_log_interval     = 10.0
+        self.alert_log_interval    = 0.001   # ~1000 log/detik (enterprise-grade)
+        self.warning_log_interval  = 0.001   # ~1000 log/detik
+        self.info_log_interval     = 0.5     # 2 log/detik (info tidak perlu sepadat attack)
+        self.drop_log_interval     = 1.0     # 1 log/detik
 
         self.last_alert_log_time   = defaultdict(float)
         self.last_warning_log_time = defaultdict(float)
@@ -163,9 +163,12 @@ class MonitorSwitch13(app_manager.RyuApp):
         return f"{color}{text}{self.RESET}"
 
     def _get_risk_emoji(self, threat_score):
-        if threat_score <= 5:  return "🟢"
-        if threat_score <= 25: return "🟡"
-        if threat_score <= 55: return "🟠"
+        if threat_score <= 5:
+            return "🟢"
+        if threat_score < 40:
+            return "🟡"
+        if threat_score < 60:
+            return "🟠"
         return "🔴"
 
     def _ok(self, msg):
@@ -444,11 +447,12 @@ class MonitorSwitch13(app_manager.RyuApp):
                 inter_arrival_std = float(np.std(deltas))
 
         return {
-            "packet_rate_ewma": smoothed,
-            "packet_count_1s": packet_count_1s,
-            "byte_count_1s": byte_count_1s,
-            "avg_pkt_size": avg_pkt_size,
-            "pkt_size_std": pkt_size_std,
+            "packet_rate_ewma":  smoothed,    # tetap untuk SVM + deteksi
+            "packet_rate_raw":   raw_rate,    # tambah ini untuk CSV
+            "packet_count_1s":   packet_count_1s,
+            "byte_count_1s":     byte_count_1s,
+            "avg_pkt_size":      avg_pkt_size,
+            "pkt_size_std":      pkt_size_std,
             "inter_arrival_std": inter_arrival_std,
         }
 
@@ -460,16 +464,25 @@ class MonitorSwitch13(app_manager.RyuApp):
         return s
 
     def _calculate_threat_score(self, packet_rate, final_prediction):
+        # Traffic belum diklasifikasi sebagai attack
         if final_prediction == 0:
-            if packet_rate >= 40: return 25
-            if packet_rate >= 20: return 12
+            if packet_rate >= self.attack_rate_threshold:
+                return 40
+            if packet_rate >= self.warning_rate_threshold:
+                return 25
             return 5
-        if packet_rate >= 120: return 95
-        if packet_rate >= 100: return 85
-        if packet_rate >= 80: return 70
-        if packet_rate >= 50: return 55
-        return 40
 
+        # Traffic sudah diklasifikasi sebagai attack / ICMP Flood
+        if packet_rate >= 400:
+            return 95
+        if packet_rate >= 200:
+            return 85
+        if packet_rate >= 100:
+            return 75
+        if packet_rate >= self.attack_rate_threshold:
+            return 65
+        return 55
+    
     def _get_attack_type(self, protocol_name, final_prediction, mitigation_active):
         # Catatan: tidak lagi dipakai untuk kolom CSV (dihapus saat pemangkasan
         # 25→13 kolom karena bisa diturunkan ulang dari final_prediction).
@@ -834,14 +847,14 @@ class MonitorSwitch13(app_manager.RyuApp):
         icmp_pkt = pkt.get_protocol(icmp.icmp)
         arp_pkt  = pkt.get_protocol(arp.arp)
 
-        if out_port != ofproto.OFPP_FLOOD:
+        if out_port != ofproto.OFPP_FLOOD and icmp_pkt is None:
             match = parser.OFPMatch(in_port=in_port, eth_src=src_mac, eth_dst=dst_mac)
             if msg.buffer_id != ofproto.OFP_NO_BUFFER:
                 self.add_flow(datapath, 10, match, actions,
-                              buffer_id=msg.buffer_id, idle_timeout=30, hard_timeout=60)
+                            buffer_id=msg.buffer_id, idle_timeout=30, hard_timeout=60)
             else:
                 self.add_flow(datapath, 10, match, actions,
-                              idle_timeout=30, hard_timeout=60)
+                            idle_timeout=30, hard_timeout=60)
 
         if arp_pkt is not None:
             self._send_packet_out(datapath, msg, in_port, actions)
@@ -872,7 +885,7 @@ class MonitorSwitch13(app_manager.RyuApp):
                     self._append_csv(self.traffic_analysis_path, [
                         timestamp, src_ip, dst_ip, proto, session_id,
                         "NORMAL", phase,
-                        round(packet_rate, 4), packet_count,
+                        round(packet_features["packet_rate_raw"], 4), packet_count,
                         5, 0, dpid_name,
                         event_note,
                     ])
@@ -906,7 +919,7 @@ class MonitorSwitch13(app_manager.RyuApp):
             self._append_csv(self.traffic_analysis_path, [
                 timestamp, src_ip, dst_ip, "ICMP", session_id,
                 "NORMAL", "NORMAL",
-                round(packet_rate, 4), packet_count,
+                round(packet_features["packet_rate_raw"], 4), packet_count,
                 5, 0, dpid_name,
                 "icmp_non_victim",
             ])
@@ -938,7 +951,7 @@ class MonitorSwitch13(app_manager.RyuApp):
             self._append_csv(self.traffic_analysis_path, [
                 timestamp, src_ip, dst_ip, "ICMP", session_id,
                 "NORMAL", phase,
-                round(packet_rate, 4), packet_count,
+                round(packet_features["packet_rate_raw"], 4), packet_count,
                 5, 0, dpid_name,
                 "icmp_to_victim",
             ])
@@ -962,6 +975,9 @@ class MonitorSwitch13(app_manager.RyuApp):
         # UPDATED: severity/event_type/attack_type/attacker_segment dihapus
         # (tidak lagi ditulis ke CSV); final_prediction_log, event_note, phase
         # tetap dihitung karena masih dipakai.
+        # Hitung raw_rate, threat_score, risk_emoji dulu sebelum branching
+        logged_packet_rate_raw = 0.0 if mitigation_active else packet_features["packet_rate_raw"]
+
         if mitigation_active:
             final_prediction_log = 0
             event_note = "attacker_blocked"
@@ -979,8 +995,8 @@ class MonitorSwitch13(app_manager.RyuApp):
             event_note = "icmp_normal"
             phase      = "NORMAL"
 
-        logged_packet_rate = 0.0 if mitigation_active else packet_rate
-        threat_score = self._calculate_threat_score(logged_packet_rate, final_prediction_log)
+        # Dihitung setelah final_prediction_log ditentukan
+        threat_score = self._calculate_threat_score(logged_packet_rate_raw, final_prediction_log)
         risk_emoji   = self._get_risk_emoji(threat_score)
 
         should_write_csv = True
@@ -989,12 +1005,13 @@ class MonitorSwitch13(app_manager.RyuApp):
             if not self._should_log_info(key_csv):
                 should_write_csv = False
 
+        raw_rate_to_log = 0.0 if mitigation_active else packet_features["packet_rate_raw"]
+
         if should_write_csv:
-            # UPDATED: 13 kolom
             self._append_csv(self.traffic_analysis_path, [
                 timestamp, src_ip, dst_ip, "ICMP", session_id,
                 detection_status, phase,
-                round(logged_packet_rate, 4), packet_count,
+                round(raw_rate_to_log, 4), packet_count,
                 threat_score, final_prediction_log, dpid_name,
                 event_note,
             ])
@@ -1017,7 +1034,7 @@ class MonitorSwitch13(app_manager.RyuApp):
 
                 self._alert(
                     f"ICMP FLOOD | {src_ip} → {dst_ip} | "
-                    f"{logged_packet_rate:.2f}pps | Risk={risk_emoji}{threat_score} | "
+                    f"{logged_packet_rate_raw:.2f}pps | Risk={risk_emoji}{threat_score} | "
                     f"Pkts={packet_count} | {status_txt}"
                 )
 
@@ -1028,7 +1045,7 @@ class MonitorSwitch13(app_manager.RyuApp):
             if self._should_log_warning(src_ip):
                 self._warn(
                     f"ICMP SUSPECT | {src_ip} → {dst_ip} | "
-                    f"{logged_packet_rate:.2f}pps | Risk={risk_emoji}{threat_score} | "
+                    f"{logged_packet_rate_raw:.2f}pps | Risk={risk_emoji}{threat_score} | "
                     f"MONITORING"
                 )
 
@@ -1036,7 +1053,7 @@ class MonitorSwitch13(app_manager.RyuApp):
             if self._should_log_info(f"ICMP:{src_ip}->{dst_ip}"):
                 self._info(
                     f"ICMP NORMAL | {src_ip} → {dst_ip} | "
-                    f"{logged_packet_rate:.2f}pps | Risk={risk_emoji}{threat_score}"
+                    f"{logged_packet_rate_raw:.2f}pps | Risk={risk_emoji}{threat_score}"
                 )
 
         self._send_packet_out(datapath, msg, in_port, actions)
