@@ -4,9 +4,7 @@
 import os
 import csv
 import time
-import joblib
 import numpy as np
-import pandas as pd
 import warnings
 warnings.filterwarnings("ignore")
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -65,6 +63,23 @@ class MonitorSwitch13(app_manager.RyuApp):
     MITIGATION_HARD_TIMEOUT = 300
     MITIGATION_IDLE_TIMEOUT = 0
 
+    # PATCH: idle_timeout untuk flow forwarding non-ICMP (TCP/UDP/ARP).
+    # hard_timeout SENGAJA 0 (tidak pernah expired paksa) supaya transfer
+    # panjang (mis. nc 100KB+, curl berkali-kali) tidak terputus tengah
+    # jalan hanya karena flow-nya "kadaluarsa" walau traffic masih aktif.
+    # idle_timeout tetap ada supaya flow yang benar-benar sudah tidak
+    # dipakai (tidak ada traffic) akhirnya dibersihkan otomatis oleh OVS.
+    FORWARDING_IDLE_TIMEOUT = 60
+    FORWARDING_HARD_TIMEOUT = 0
+
+    # PATCH: idle_timeout untuk flow ARP permanen per pasangan host, supaya
+    # ARP tidak selalu nyangkut ke controller berulang-ulang (sebelumnya
+    # SEMUA paket ARP di-packet_out lewat controller tanpa pernah dipasang
+    # flow, sehingga ARP re-trigger terus-menerus dan mendominasi traffic
+    # capture, bukan cuma sekali di awal seperti pada jaringan normal).
+    ARP_FLOW_IDLE_TIMEOUT = 120
+    ARP_FLOW_HARD_TIMEOUT = 0
+
     def __init__(self, *args, **kwargs):
         super(MonitorSwitch13, self).__init__(*args, **kwargs)
 
@@ -74,23 +89,9 @@ class MonitorSwitch13(app_manager.RyuApp):
         ]
         self.base_dir = next((p for p in base_candidates if os.path.isdir(p)), base_candidates[-1])
         self.logs_dir   = os.path.join(self.base_dir, "logs")
-        self.models_dir = os.path.join(self.base_dir, "models")
 
         self.traffic_analysis_path = os.path.join(self.logs_dir, "traffic_analysis.csv")
         self.mitigation_log_path   = os.path.join(self.logs_dir, "mitigation_events.csv")
-
-        self.model_candidates = [
-            os.path.join(self.models_dir, "svm_model.pkl"),
-            os.path.join(self.base_dir, "svm_model.pkl"),
-        ]
-        self.scaler_candidates = [
-            os.path.join(self.models_dir, "svm_scaler.pkl"),
-            os.path.join(self.base_dir, "svm_scaler.pkl"),
-        ]
-        self.feature_name_candidates = [
-            os.path.join(self.models_dir, "svm_feature_names.pkl"),
-            os.path.join(self.base_dir, "svm_feature_names.pkl"),
-        ]
 
         self.mac_to_port = defaultdict(dict)
         self.datapaths   = {}
@@ -98,15 +99,23 @@ class MonitorSwitch13(app_manager.RyuApp):
         self.rate_window_seconds          = 1.0
         self.warning_rate_threshold       = 10.0
         self.attack_rate_threshold        = 25.0
+        # NOTE: confirmation_seconds sudah TIDAK dipakai di alur manapun sejak
+        # SVM dihapus (dulu bagian dari kondisi svm_prediction==1 AND
+        # elapsed_warning>=confirmation_seconds). Dibiarkan ada (bukan
+        # dihapus) supaya tidak mengubah signature/config tanpa konfirmasi —
+        # aman dihapus kapan saja karena tidak direferensikan di kode manapun.
         self.confirmation_seconds         = 5.0
         self.mitigation_delay_after_alert = 8.0
 
-        # UPDATED: flag skenario "DDoS tanpa mitigasi" — set via env var
         # Jalankan dengan: DISABLE_MITIGATION=1 ryu-manager controller/controller.py
-
         self.disable_mitigation = os.getenv("DISABLE_MITIGATION", "0").lower() in ("1", "true", "yes", "on")
-        self.ewma_alpha = 0.3
-        self.ewma_rates = defaultdict(float)
+        # UPDATED: EWMA dihapus. Rate yang dipakai untuk keputusan & logging
+        # sekarang murni raw_rate (sliding window 1 detik), tanpa smoothing.
+        # Alasan: skenario pengujian pakai attacker dengan rate konsisten
+        # (hping3 -i u1000), sehingga smoothing tidak memberi manfaat berarti
+        # dan justru menimbulkan delay deteksi serta gap antara nilai rate
+        # yang dicatat di CSV dengan nilai yang menjadi dasar keputusan —
+        # penting untuk transparansi/auditability hasil pengujian.
 
         self.alert_log_interval    = 0.001   # ~1000 log/detik (enterprise-grade)
         self.warning_log_interval  = 0.001   # ~1000 log/detik
@@ -149,12 +158,7 @@ class MonitorSwitch13(app_manager.RyuApp):
         self._cleanup_interval   = 120.0
         self._session_max_age    = 300.0
 
-        self.model         = None
-        self.scaler        = None
-        self.feature_names = []
-
         self._startup_banner()
-        self._load_model()
         self._init_csv_files()
         self._print_topology_summary()
         self._info("CONTROLLER_READY | Drop-based mitigation | 3-phase scenario ready")
@@ -184,10 +188,77 @@ class MonitorSwitch13(app_manager.RyuApp):
         self.logger.warning(self._paint(f"🚨 ALERT      | {msg}", self.RED))
 
     def _mitigation(self, msg):
+        # DEPRECATED: dipertahankan untuk kompatibilitas, tapi event mitigasi
+        # sekarang dicetak lewat _log_mitigation_event() dengan format seragam
+        # (DROP_INSTALLED/DROP_EXPIRED), bukan lewat method ini lagi.
         self.logger.warning(self._paint(f"🛡️ MITIGATION | {msg}", self.MAGENTA))
 
     def _release(self, msg):
+        # DEPRECATED: sama seperti _mitigation() di atas, digantikan
+        # _log_mitigation_event("DROP_EXPIRED", ...).
         self.logger.info(self._paint(f"✔️ RELEASE    | {msg}", self.DIM))
+
+    # -------------------------------------------------------------------
+    # FORMAT LOG SERAGAM
+    #
+    # Ada 2 jenis log yang sifatnya beda, sengaja tidak dipaksa satu bentuk:
+    #
+    # 1) STATUS TRAFFIC (NORMAL/WARNING/ATTACK) — dipanggil lewat
+    #    _log_traffic_status(). Berulang tiap paket diproses, SELALU py
+    #    Src/Dst/Rate/Risk/Phase karena memang ada paket nyata yang diukur.
+    #
+    # 2) EVENT MITIGASI (DROP_INSTALLED/DROP_EXPIRED) — dipanggil lewat
+    #    _log_mitigation_event(). Sesaat, cuma 2x per attacker per siklus
+    #    drop (pasang & expired). TIDAK ada Rate/Risk karena tidak ada
+    #    paket yang sedang diukur di momen itu (attacker sudah tidak
+    #    terlihat controller selama drop rule aktif).
+    #
+    # Jangan gabungkan keduanya ke satu template — itu yang bikin log lama
+    # membingungkan (Risk= muncul di baris mitigasi padahal tidak relevan).
+    # -------------------------------------------------------------------
+
+    def _log_traffic_status(self, status, src_ip, dst_ip, rate, threat_score, phase,
+                             protocol=None, src_port=None, dst_port=None):
+        """
+        Satu-satunya jalur cetak untuk status traffic NORMAL/WARNING/ATTACK.
+        Formatnya identik untuk ketiganya, cuma icon/warna & nilai field beda.
+        """
+        risk_emoji = self._get_risk_emoji(threat_score)
+
+        if protocol and protocol in ("TCP", "UDP") and src_port and dst_port:
+            endpoint = f"Src={src_ip}:{src_port} → Dst={dst_ip}:{dst_port} [{protocol}]"
+        else:
+            endpoint = f"Src={src_ip} → Dst={dst_ip}"
+
+        line = (
+            f"{endpoint} | Rate={rate:.2f}pps | "
+            f"Risk={risk_emoji}{threat_score} | Phase={phase}"
+        )
+
+        if status == "NORMAL":
+            self.logger.info(self._paint(f"✅ NORMAL     | {line}", self.GREEN))
+        elif status == "WARNING":
+            self.logger.warning(self._paint(f"⚠️ WARNING    | {line}", self.YELLOW))
+        elif status == "ATTACK":
+            self.logger.warning(self._paint(f"🚨 ATTACK     | {line}", self.RED))
+
+    def _log_mitigation_event(self, action, src_ip, hostname, dst_ip, switch_name=None,
+                               hard_timeout=None, phase=None):
+        """
+        Satu-satunya jalur cetak untuk event mitigasi (bukan status traffic).
+        action: "DROP_INSTALLED" atau "DROP_EXPIRED".
+        """
+        if action == "DROP_INSTALLED":
+            self.logger.warning(self._paint(
+                f"🛡️ MITIGATION | DROP_INSTALLED | Src={src_ip} ({hostname}) → Dst={dst_ip} | "
+                f"Switch={switch_name} | HardTimeout={hard_timeout}s",
+                self.MAGENTA,
+            ))
+        elif action == "DROP_EXPIRED":
+            self.logger.info(self._paint(
+                f"✔️ RELEASE    | DROP_EXPIRED | Src={src_ip} ({hostname}) → Dst={dst_ip} | Phase={phase}",
+                self.DIM,
+            ))
 
     def _should_log_alert(self, key):
         now = time.time()
@@ -222,8 +293,7 @@ class MonitorSwitch13(app_manager.RyuApp):
         self.logger.info(self._paint("🔒 Ryu SDN ICMP Flood Forensic Controller — Final (Drop-Based)", self.CYAN))
         self.logger.info(self._paint("📊 3-Phase scenario: NORMAL → ATTACK → MITIGATED", self.CYAN))
         self.logger.info(self._paint("🧾 Baseline ping always logged to CSV | Clear cliff on grafik", self.CYAN))
-        # UPDATED: tampilkan status mode mitigasi secara jelas di log, supaya
-        # screenshot/log run "tanpa mitigasi" tidak tertukar dengan run normal.
+        self.logger.info(self._paint("📈 Detection=raw rate threshold (no SVM, no EWMA)", self.CYAN))
         if self.disable_mitigation:
             self.logger.warning(self._paint(
                 "⚠️  MITIGATION DISABLED — mode deteksi-saja (DISABLE_MITIGATION=1)", self.YELLOW))
@@ -263,47 +333,6 @@ class MonitorSwitch13(app_manager.RyuApp):
 
         self._ok(f"FLOW_INSTALLED | dpid={datapath.id} | {self.SWITCH_DPID_MAP.get(datapath.id,'unknown')}")
 
-    def _load_model(self):
-        self.model = None
-        self.scaler = None
-        self.feature_names = []
-
-        for path in self.model_candidates:
-            if os.path.exists(path):
-                try:
-                    self.model = joblib.load(path)
-                    self._ok(f"SVM_LOADED | path={path}")
-                    break
-                except Exception as e:
-                    self.logger.error("Failed to load model %s: %s", path, e)
-
-        for path in self.scaler_candidates:
-            if os.path.exists(path):
-                try:
-                    self.scaler = joblib.load(path)
-                    self._ok(f"SVM_SCALER_LOADED | path={path}")
-                    break
-                except Exception as e:
-                    self.logger.error("Failed to load scaler %s: %s", path, e)
-
-        for path in self.feature_name_candidates:
-            if os.path.exists(path):
-                try:
-                    names = joblib.load(path)
-                    self.feature_names = [str(v) for v in names]
-                    self._ok(f"SVM_FEATURE_NAMES_LOADED | path={path}")
-                    break
-                except Exception as e:
-                    self.logger.error("Failed to load feature names %s: %s", path, e)
-
-        if not self.feature_names and self.model is not None:
-            self.feature_names = list(getattr(self.model, "feature_names_in_", []))
-
-        if self.model is None:
-            self._warn("SVM_NOT_LOADED | Detection=threshold+EWMA only")
-        elif self.scaler is None:
-            self._warn("SVM_SCALER_NOT_LOADED | Prediction runs without normalization")
-
     def _ensure_csv_with_header(self, path, header):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if (not os.path.exists(path)) or os.path.getsize(path) == 0:
@@ -311,18 +340,12 @@ class MonitorSwitch13(app_manager.RyuApp):
                 csv.writer(f).writerow(header)
 
     def _init_csv_files(self):
-        # UPDATED: traffic_header dipangkas dari 25 kolom jadi 13 kolom.
-        # Kolom dihapus karena redundan/tidak pernah dipakai di analyzer:
-        # severity, event_type, mitigation_status (turunan dari detection_status),
-        # src_port, dst_port (sudah terangkum di session_id),
-        # src_mac, dst_mac, dpid (numerik, dpid_name sudah cukup),
-        # in_port, out_port, attack_type (turunan dari final_prediction),
-        # attacker_segment (turunan dari dpid_name).
+        # UPDATED: kolom SVM (final_prediction) dihapus. 12 kolom total.
         traffic_header = [
             "timestamp", "src_ip", "dst_ip", "protocol_name", "session_id",
             "detection_status", "phase",
             "packet_rate", "packet_count", "threat_score",
-            "final_prediction", "dpid_name", "event_note",
+            "dpid_name", "event_note",
         ]
 
         mitigation_header = [
@@ -333,7 +356,7 @@ class MonitorSwitch13(app_manager.RyuApp):
 
         self._ensure_csv_with_header(self.traffic_analysis_path, traffic_header)
         self._ensure_csv_with_header(self.mitigation_log_path,   mitigation_header)
-        self._ok("CSV_READY | traffic_analysis.csv (13 cols, ringkas) | mitigation_events.csv")
+        self._ok("CSV_READY | traffic_analysis.csv (12 cols, no SVM) | mitigation_events.csv")
 
     def _append_csv(self, path, row):
         with open(path, "a", newline="") as f:
@@ -363,54 +386,20 @@ class MonitorSwitch13(app_manager.RyuApp):
         except Exception:
             return None
 
-    def _build_feature_dataframe(self, dst_ip, packet_features):
-        values = {
-            "is_to_victim": float(1 if dst_ip == self.VICTIM_IP else 0),
-            "packet_rate_ewma": float(packet_features["packet_rate_ewma"]),
-            "packet_count_1s": float(packet_features["packet_count_1s"]),
-            "byte_count_1s": float(packet_features["byte_count_1s"]),
-            "avg_pkt_size": float(packet_features["avg_pkt_size"]),
-            "pkt_size_std": float(packet_features["pkt_size_std"]),
-            "inter_arrival_std": float(packet_features["inter_arrival_std"]),
-        }
-        ordered_columns = self.feature_names or [
-            "is_to_victim",
-            "packet_rate_ewma",
-            "packet_count_1s",
-            "byte_count_1s",
-            "avg_pkt_size",
-            "pkt_size_std",
-            "inter_arrival_std",
-        ]
-        row = {n: values.get(n, 0.0) for n in ordered_columns}
-        return pd.DataFrame([row], columns=ordered_columns)
-
-    def _predict_traffic(self, features_df):
-        if self.model is None:
-            return 0
-        try:
-            data = features_df.values
-            if self.scaler is not None:
-                # FIX: Set column names sebelum transform
-                features_df_named = features_df.copy()
-                features_df_named.columns = self.feature_names or features_df.columns.tolist()
-                data = self.scaler.transform(features_df_named)
-            return int(self.model.predict(data)[0])
-        except Exception as e:
-            self.logger.error("Prediction failed: %s", e)
-            return 0
-
-    def _apply_prediction_guard(self, svm_prediction, packet_rate):
-         if packet_rate < self.warning_rate_threshold:
-             return 0
-
-         if packet_rate >= self.attack_rate_threshold:
-             return 1
-
-         if self.model is None:
-             return 0
-
-         return int(svm_prediction)
+    def _classify_rate(self, packet_rate):
+        """
+        Pengganti _apply_prediction_guard (SVM dihapus).
+        Klasifikasi murni berbasis threshold raw rate (tanpa EWMA):
+          rate < warning_rate_threshold   -> 0 (NORMAL)
+          rate >= attack_rate_threshold   -> 1 (ATTACK)
+          di antara keduanya              -> 0 (masih WARNING, belum ATTACK;
+                                                 status WARNING/ATTACK_CONFIRMED
+                                                 tetap ditentukan di
+                                                 _update_detection_state)
+        """
+        if packet_rate >= self.attack_rate_threshold:
+            return 1
+        return 0
 
     def _get_session_id(self, src_ip, dst_ip, protocol_name="", src_port="", dst_port=""):
         if protocol_name in ["TCP","UDP"] and src_port and dst_port:
@@ -430,9 +419,8 @@ class MonitorSwitch13(app_manager.RyuApp):
             size_q.popleft()
 
         raw_rate = float(len(time_q)) / self.rate_window_seconds
-        prev = self.ewma_rates[session_id]
-        smoothed = self.ewma_alpha * raw_rate + (1.0 - self.ewma_alpha) * prev
-        self.ewma_rates[session_id] = smoothed
+        # EWMA dihapus — raw_rate langsung jadi satu-satunya basis keputusan
+        # dan logging (lihat catatan di __init__).
 
         sizes = [s for _, s in size_q]
         packet_count_1s = len(sizes)
@@ -447,8 +435,11 @@ class MonitorSwitch13(app_manager.RyuApp):
                 inter_arrival_std = float(np.std(deltas))
 
         return {
-            "packet_rate_ewma":  smoothed,    # tetap untuk SVM + deteksi
-            "packet_rate_raw":   raw_rate,    # tambah ini untuk CSV
+            # Satu-satunya rate: dipakai untuk keputusan (_classify_rate,
+            # _update_detection_state) MAUPUN untuk logging CSV/console.
+            # Tidak ada lagi dua angka (ewma vs raw) yang bisa berbeda —
+            # angka yang dicatat = angka yang memicu keputusan.
+            "packet_rate":       raw_rate,
             "packet_count_1s":   packet_count_1s,
             "byte_count_1s":     byte_count_1s,
             "avg_pkt_size":      avg_pkt_size,
@@ -464,7 +455,7 @@ class MonitorSwitch13(app_manager.RyuApp):
         return s
 
     def _calculate_threat_score(self, packet_rate, final_prediction):
-        # Traffic belum diklasifikasi sebagai attack
+        # final_prediction sekarang murni hasil _classify_rate (bukan SVM lagi)
         if final_prediction == 0:
             if packet_rate >= self.attack_rate_threshold:
                 return 40
@@ -472,7 +463,6 @@ class MonitorSwitch13(app_manager.RyuApp):
                 return 25
             return 5
 
-        # Traffic sudah diklasifikasi sebagai attack / ICMP Flood
         if packet_rate >= 400:
             return 95
         if packet_rate >= 200:
@@ -482,58 +472,18 @@ class MonitorSwitch13(app_manager.RyuApp):
         if packet_rate >= self.attack_rate_threshold:
             return 65
         return 55
-    
-    def _get_attack_type(self, protocol_name, final_prediction, mitigation_active):
-        # Catatan: tidak lagi dipakai untuk kolom CSV (dihapus saat pemangkasan
-        # 25→13 kolom karena bisa diturunkan ulang dari final_prediction).
-        # Method ini dibiarkan tetap ada untuk keperluan lain bila diperlukan.
-        if protocol_name != "ICMP":      return "BENIGN_TRAFFIC"
-        if mitigation_active:            return "ICMP_FLOOD_DROPPED"
-        if final_prediction == 1:        return "ICMP_FLOOD"
-        return "BENIGN_ICMP"
 
     def _get_attacker_segment(self, src_ip):
-        # Catatan: tidak lagi dipakai untuk kolom CSV (redundan dengan dpid_name).
-        # Method ini dibiarkan tetap ada untuk keperluan lain bila diperlukan.
         if src_ip in self.ATTACKER_SEGMENTS:
             _, seg = self.ATTACKER_SEGMENTS[src_ip]
             return seg
         return "NORMAL_HOST"
 
-    def _get_phase(self, src_ip, detection_status, mitigation_active):
-        if mitigation_active:
-            return "MITIGATED"
-        if detection_status in ("WARNING", "ATTACK_CONFIRMED"):
-            return "ATTACK"
-        return "NORMAL"
-
-    def _log_state_transition(self, src_ip, old_status, new_status, packet_rate):
-        if old_status == new_status:
-            return
-        if new_status == "WARNING":
-            self._warn(
-                f"STATE_TRANSITION | {src_ip} | {old_status}→WARN | "
-                f"rate={packet_rate:.2f}pps (20-50 pps range)"
-            )
-        elif new_status == "ATTACK_CONFIRMED":
-            self._alert(
-                f"STATE_TRANSITION | {src_ip} | {old_status}→ALERT | "
-                f"rate={packet_rate:.2f}pps (>{self.attack_rate_threshold} pps or SVM confirmed >{self.confirmation_seconds:.0f}s)"
-            )
-        elif new_status == "DROP_ACTIVE":
-            self._mitigation(
-                f"STATE_TRANSITION | {src_ip} | ALERT→DROP | mitigation_status=DROP_ACTIVE"
-            )
-        elif new_status == "NORMAL" and old_status == "DROP_ACTIVE":
-            self._release(
-                f"STATE_TRANSITION | {src_ip} | DROP→RELEASE | mitigation window ended"
-            )
-        elif new_status == "NORMAL":
-            self._info(
-                f"STATE_TRANSITION | {src_ip} | {old_status}→NORMAL | rate={packet_rate:.2f}pps (<20 pps)"
-            )
-
-    def _update_detection_state(self, session_id, src_ip, svm_prediction, packet_rate, mitigation_active):
+    def _update_detection_state(self, session_id, src_ip, packet_rate, mitigation_active):
+        # UPDATED: parameter svm_prediction dihapus. Klasifikasi sekarang murni
+        # berbasis rate (lihat _classify_rate), tidak ada lagi jalur konfirmasi
+        # via model — begitu rate >= attack_rate_threshold, status langsung
+        # ATTACK_CONFIRMED tanpa perlu menunggu confirmation_seconds.
         now = time.time()
         state = self.session_detection_state[session_id]
         old_status = state["status"]
@@ -541,18 +491,13 @@ class MonitorSwitch13(app_manager.RyuApp):
 
         if mitigation_active:
             state["status"] = "DROP_ACTIVE"
-            self._log_state_transition(src_ip, old_status, state["status"], packet_rate)
             return state
 
         warning_condition = packet_rate >= self.warning_rate_threshold
         if warning_condition and state["warning_since"] is None:
             state["warning_since"] = now
 
-        elapsed_warning = (now - state["warning_since"]) if state["warning_since"] else 0.0
-        alert_condition = (
-            packet_rate > self.attack_rate_threshold or
-            (svm_prediction == 1 and elapsed_warning >= self.confirmation_seconds)
-        )
+        alert_condition = packet_rate >= self.attack_rate_threshold
 
         if alert_condition:
             state["status"] = "ATTACK_CONFIRMED"
@@ -568,7 +513,6 @@ class MonitorSwitch13(app_manager.RyuApp):
             state["confirmed_since"] = None
             state["alert_first_seen"] = None
 
-        self._log_state_transition(src_ip, old_status, state["status"], packet_rate)
         return state
 
     def _should_activate_mitigation(self, session_id):
@@ -693,12 +637,11 @@ class MonitorSwitch13(app_manager.RyuApp):
                         f"DROP rule installed — ICMP + ARP from {src_ip} blocked at switch level",
                     ])
 
-                    self._mitigation(
-                        f"{src_ip} ({hostname}) → {self.VICTIM_IP} | "
-                        f"Segment={seg_desc} | DROP_RULES_INSTALLED | "
-                        f"Switch={self.SWITCH_DPID_MAP.get(target_dpid,'?')} | ACTIVE"
+                    self._log_mitigation_event(
+                        "DROP_INSTALLED", src_ip, hostname, self.VICTIM_IP,
+                        switch_name=self.SWITCH_DPID_MAP.get(target_dpid, "unknown"),
+                        hard_timeout=self.MITIGATION_HARD_TIMEOUT,
                     )
-                    # baseline info removed to reduce verbosity
 
                 elif action == "DELETE":
                     self._append_csv(self.mitigation_log_path, [
@@ -711,19 +654,14 @@ class MonitorSwitch13(app_manager.RyuApp):
                         self.MITIGATION_IDLE_TIMEOUT, self.MITIGATION_HARD_TIMEOUT,
                         "DROP rule expired — network returned to NORMAL phase",
                     ])
-                    self._release(
-                        f"{src_ip} | DROP expired | Phase=NORMAL | "
-                        f"Baseline traffic only remains"
-                    )
+                    # NOTE: log "DROP_EXPIRED" sudah dicetak sekali di
+                    # _refresh_mitigation_state() saat expired terdeteksi —
+                    # tidak dicetak lagi di sini supaya tidak duplikat.
 
             except Exception as e:
                 self.logger.error("Mitigation worker error: %s", e)
 
     def _apply_mitigation_if_needed(self, datapath, src_ip):
-        # UPDATED: skenario "DDoS tanpa mitigasi" — kalau flag aktif, deteksi
-        # tetap berjalan normal (status bisa naik ke ATTACK_CONFIRMED), tapi
-        # tidak ada flow rule DROP yang dipasang sama sekali. Otomatis bikin
-        # mitigation_events.csv kosong (cuma header) untuk skenario ini.
         if self.disable_mitigation:
             return "OFF"
 
@@ -790,14 +728,15 @@ class MonitorSwitch13(app_manager.RyuApp):
 
             session_id = f"{src_ip}->{self.VICTIM_IP}:ICMP"
             ds = self.session_detection_state[session_id]
-            old_status = ds.get("status", "NORMAL")
             ds.update({
                 "status":          "NORMAL",
                 "warning_since":   None,
                 "confirmed_since": None,
                 "alert_first_seen": None,
             })
-            self._log_state_transition(src_ip, old_status, "NORMAL", 0.0)
+            self._log_mitigation_event(
+                "DROP_EXPIRED", src_ip, hostname, self.VICTIM_IP, phase="NORMAL",
+            )
 
             return "OFF"
 
@@ -812,7 +751,6 @@ class MonitorSwitch13(app_manager.RyuApp):
             self.session_packet_sizes.pop(sid, None)
             self.session_stats.pop(sid, None)
             self.session_detection_state.pop(sid, None)
-            self.ewma_rates.pop(sid, None)
         if stale:
             self.logger.debug("Session cleanup: %d stale sessions removed", len(stale))
 
@@ -847,16 +785,40 @@ class MonitorSwitch13(app_manager.RyuApp):
         icmp_pkt = pkt.get_protocol(icmp.icmp)
         arp_pkt  = pkt.get_protocol(arp.arp)
 
+        # PATCH (a): hard_timeout diganti dari 60 -> FORWARDING_HARD_TIMEOUT (0).
+        # Sebelumnya flow forwarding non-ICMP selalu expired paksa di 60 detik
+        # walau traffic masih aktif mengalir, sehingga transfer panjang
+        # (mis. nc 100KB, curl berkali-kali) bisa terputus di tengah jalan.
+        # idle_timeout tetap dipertahankan supaya flow yang benar-benar sudah
+        # tidak dipakai (tidak ada traffic sama sekali) tetap dibersihkan.
         if out_port != ofproto.OFPP_FLOOD and icmp_pkt is None:
             match = parser.OFPMatch(in_port=in_port, eth_src=src_mac, eth_dst=dst_mac)
             if msg.buffer_id != ofproto.OFP_NO_BUFFER:
                 self.add_flow(datapath, 10, match, actions,
-                            buffer_id=msg.buffer_id, idle_timeout=30, hard_timeout=60)
+                            buffer_id=msg.buffer_id,
+                            idle_timeout=self.FORWARDING_IDLE_TIMEOUT,
+                            hard_timeout=self.FORWARDING_HARD_TIMEOUT)
             else:
                 self.add_flow(datapath, 10, match, actions,
-                            idle_timeout=30, hard_timeout=60)
+                            idle_timeout=self.FORWARDING_IDLE_TIMEOUT,
+                            hard_timeout=self.FORWARDING_HARD_TIMEOUT)
 
         if arp_pkt is not None:
+            # PATCH (b): pasang flow permanen (idle_timeout panjang,
+            # hard_timeout=0) khusus untuk ARP per pasangan MAC, supaya ARP
+            # tidak selalu nyangkut ke controller berulang-ulang. Sebelumnya
+            # SEMUA paket ARP di-packet_out lewat controller tanpa pernah
+            # dipasang flow sama sekali, sehingga ARP mendominasi jumlah
+            # paket di traffic capture secara terus-menerus, bukan cuma
+            # sekali di awal seperti pada jaringan normal yang meng-cache ARP.
+            if out_port != ofproto.OFPP_FLOOD:
+                arp_learn_match = parser.OFPMatch(
+                    in_port=in_port, eth_type=0x0806,
+                    eth_src=src_mac, eth_dst=dst_mac,
+                )
+                self.add_flow(datapath, 15, arp_learn_match, actions,
+                            idle_timeout=self.ARP_FLOW_IDLE_TIMEOUT,
+                            hard_timeout=self.ARP_FLOW_HARD_TIMEOUT)
             self._send_packet_out(datapath, msg, in_port, actions)
             return
 
@@ -872,7 +834,7 @@ class MonitorSwitch13(app_manager.RyuApp):
                     session_id = self._get_session_id(src_ip, dst_ip, proto, sp, dp)
 
                     packet_features = self._get_session_window_features(session_id, packet_size)
-                    packet_rate = packet_features["packet_rate_ewma"]
+                    packet_rate = packet_features["packet_rate"]
                     session = self._update_session_stats(session_id, timestamp)
                     packet_count = session["packet_count"]
 
@@ -881,20 +843,19 @@ class MonitorSwitch13(app_manager.RyuApp):
 
                     event_note = "tcp_normal" if proto == "TCP" else "udp_normal"
 
-                    # UPDATED: 13 kolom (lihat _init_csv_files)
+                    # UPDATED: 12 kolom (final_prediction dihapus)
                     self._append_csv(self.traffic_analysis_path, [
                         timestamp, src_ip, dst_ip, proto, session_id,
                         "NORMAL", phase,
-                        round(packet_features["packet_rate_raw"], 4), packet_count,
-                        5, 0, dpid_name,
+                        round(packet_features["packet_rate"], 4), packet_count,
+                        5, dpid_name,
                         event_note,
                     ])
                     key = f"{proto}:{src_ip}->{dst_ip}:{dp}"
                     if self._should_log_info(key):
-                        proto_padded = proto.ljust(4)
-                        self._info(
-                            f"{proto_padded} NORMAL | {src_ip}:{sp or '-'} → {dst_ip}:{dp or '-'} | "
-                            f"{packet_rate:.2f}pps | Risk=🟢5 | Phase={phase}"
+                        self._log_traffic_status(
+                            "NORMAL", src_ip, dst_ip, packet_rate, threat_score=5,
+                            phase=phase, protocol=proto, src_port=sp, dst_port=dp,
                         )
             self._send_packet_out(datapath, msg, in_port, actions)
             return
@@ -909,23 +870,29 @@ class MonitorSwitch13(app_manager.RyuApp):
         packet_size = len(msg.data) if msg.data is not None else 0
         session_id = self._get_session_id(src_ip, dst_ip, "ICMP")
         packet_features = self._get_session_window_features(session_id, packet_size)
-        packet_rate = packet_features["packet_rate_ewma"]
+        packet_rate = packet_features["packet_rate"]
         timestamp   = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         session     = self._update_session_stats(session_id, timestamp)
         packet_count = session["packet_count"]
 
         if dst_ip != self.VICTIM_IP:
-            # UPDATED: 13 kolom
+            # Phase selalu NORMAL di sini karena mitigasi hanya pernah
+            # menyasar traffic menuju VICTIM_IP; traffic ke host lain
+            # tidak pernah dipengaruhi status mitigasi manapun.
+            phase = "NORMAL"
+            # UPDATED: 12 kolom
             self._append_csv(self.traffic_analysis_path, [
                 timestamp, src_ip, dst_ip, "ICMP", session_id,
-                "NORMAL", "NORMAL",
-                round(packet_features["packet_rate_raw"], 4), packet_count,
-                5, 0, dpid_name,
+                "NORMAL", phase,
+                round(packet_features["packet_rate"], 4), packet_count,
+                5, dpid_name,
                 "icmp_non_victim",
             ])
             key = f"ICMP:{src_ip}->{dst_ip}"
             if self._should_log_info(key):
-                self._info(f"ICMP NORMAL | {src_ip} → {dst_ip} | {packet_rate:.2f}pps | Risk=🟢5")
+                self._log_traffic_status(
+                    "NORMAL", src_ip, dst_ip, packet_rate, threat_score=5, phase=phase,
+                )
             self._send_packet_out(datapath, msg, in_port, actions)
             return
 
@@ -947,36 +914,37 @@ class MonitorSwitch13(app_manager.RyuApp):
             )
             phase = "MITIGATED" if any_mitigation else "NORMAL"
 
-            # UPDATED: 13 kolom
+            # UPDATED: 12 kolom
             self._append_csv(self.traffic_analysis_path, [
                 timestamp, src_ip, dst_ip, "ICMP", session_id,
                 "NORMAL", phase,
-                round(packet_features["packet_rate_raw"], 4), packet_count,
-                5, 0, dpid_name,
+                round(packet_features["packet_rate"], 4), packet_count,
+                5, dpid_name,
                 "icmp_to_victim",
             ])
             key = f"BASELINE:{src_ip}->{dst_ip}"
             if self._should_log_info(key):
-                self._info(
-                    f"ICMP NORMAL | {src_ip} → {dst_ip} | "
-                    f"{packet_rate:.2f}pps | Risk=🟢5 | Phase={phase}"
+                self._log_traffic_status(
+                    "NORMAL", src_ip, dst_ip, packet_rate, threat_score=5, phase=phase,
                 )
             self._send_packet_out(datapath, msg, in_port, actions)
             return
 
-        features_df = self._build_feature_dataframe(dst_ip=dst_ip, packet_features=packet_features)
-        svm_prediction   = self._predict_traffic(features_df)
-        final_prediction = self._apply_prediction_guard(svm_prediction, packet_rate)
+        # UPDATED: klasifikasi murni dari raw rate (EWMA dihapus) via
+        # _classify_rate — lihat catatan di __init__ dan
+        # _get_session_window_features soal alasan penghapusan EWMA.
+        final_prediction = self._classify_rate(packet_rate)
 
         detection_state = self._update_detection_state(
-            session_id, src_ip, final_prediction, packet_rate, mitigation_active)
+            session_id, src_ip, packet_rate, mitigation_active)
         detection_status = detection_state["status"]
 
-        # UPDATED: severity/event_type/attack_type/attacker_segment dihapus
-        # (tidak lagi ditulis ke CSV); final_prediction_log, event_note, phase
-        # tetap dihitung karena masih dipakai.
-        # Hitung raw_rate, threat_score, risk_emoji dulu sebelum branching
-        logged_packet_rate_raw = 0.0 if mitigation_active else packet_features["packet_rate_raw"]
+        # rate_to_log: satu-satunya angka rate yang dipakai dari titik ini
+        # sampai ke CSV maupun console — sama persis dengan packet_rate yang
+        # memicu keputusan di _classify_rate/_update_detection_state di atas.
+        # Di-nol-kan hanya saat mitigation_active (attacker sedang di-drop,
+        # tidak ada paket baru yang benar-benar diukur).
+        rate_to_log = 0.0 if mitigation_active else packet_rate
 
         if mitigation_active:
             final_prediction_log = 0
@@ -995,9 +963,7 @@ class MonitorSwitch13(app_manager.RyuApp):
             event_note = "icmp_normal"
             phase      = "NORMAL"
 
-        # Dihitung setelah final_prediction_log ditentukan
-        threat_score = self._calculate_threat_score(logged_packet_rate_raw, final_prediction_log)
-        risk_emoji   = self._get_risk_emoji(threat_score)
+        threat_score = self._calculate_threat_score(rate_to_log, final_prediction_log)
 
         should_write_csv = True
         if mitigation_active:
@@ -1005,37 +971,27 @@ class MonitorSwitch13(app_manager.RyuApp):
             if not self._should_log_info(key_csv):
                 should_write_csv = False
 
-        raw_rate_to_log = 0.0 if mitigation_active else packet_features["packet_rate_raw"]
-
         if should_write_csv:
+            # UPDATED: 12 kolom (final_prediction_log dihapus dari row)
             self._append_csv(self.traffic_analysis_path, [
                 timestamp, src_ip, dst_ip, "ICMP", session_id,
                 detection_status, phase,
-                round(raw_rate_to_log, 4), packet_count,
-                threat_score, final_prediction_log, dpid_name,
+                round(rate_to_log, 4), packet_count,
+                threat_score, dpid_name,
                 event_note,
             ])
 
-        if mitigation_active:
-            if self._should_log_drop(src_ip):
-                self._mitigation(
-                    f"DROP ACTIVE | {src_ip} → {dst_ip} | "
-                    f"Switch={self.SWITCH_DPID_MAP.get(self.active_mitigations[src_ip].get('last_applied_dpid','?'),'?')} | "
-                    f"Phase=MITIGATED"
-                )
+        # NOTE: cabang "mitigation_active" DIHAPUS di sini — sudah dijamin
+        # dead code karena paket attacker yang sedang di-drop sudah
+        # di-swallow duluan oleh `if is_attacker and mitigation_active: return`
+        # di atas. Event mitigasi (DROP_INSTALLED/DROP_EXPIRED) dicetak
+        # terpisah lewat _log_mitigation_event(), bukan di sini — lihat
+        # penjelasan di definisi _log_traffic_status/_log_mitigation_event.
 
-        elif detection_status == "ATTACK_CONFIRMED":
+        if detection_status == "ATTACK_CONFIRMED":
             if self._should_log_alert(src_ip):
-                if self.disable_mitigation:
-                    status_txt = "MITIGATION_DISABLED"
-                else:
-                    countdown  = self._get_countdown_seconds(session_id)
-                    status_txt = f"MITIGATING_IN_{countdown}s" if countdown > 0 else "ACTIVATING_DROP"
-
-                self._alert(
-                    f"ICMP FLOOD | {src_ip} → {dst_ip} | "
-                    f"{logged_packet_rate_raw:.2f}pps | Risk={risk_emoji}{threat_score} | "
-                    f"Pkts={packet_count} | {status_txt}"
+                self._log_traffic_status(
+                    "ATTACK", src_ip, dst_ip, rate_to_log, threat_score, phase,
                 )
 
             if self._should_activate_mitigation(session_id):
@@ -1043,17 +999,14 @@ class MonitorSwitch13(app_manager.RyuApp):
 
         elif detection_status == "WARNING":
             if self._should_log_warning(src_ip):
-                self._warn(
-                    f"ICMP SUSPECT | {src_ip} → {dst_ip} | "
-                    f"{logged_packet_rate_raw:.2f}pps | Risk={risk_emoji}{threat_score} | "
-                    f"MONITORING"
+                self._log_traffic_status(
+                    "WARNING", src_ip, dst_ip, rate_to_log, threat_score, phase,
                 )
 
         else:
             if self._should_log_info(f"ICMP:{src_ip}->{dst_ip}"):
-                self._info(
-                    f"ICMP NORMAL | {src_ip} → {dst_ip} | "
-                    f"{logged_packet_rate_raw:.2f}pps | Risk={risk_emoji}{threat_score}"
+                self._log_traffic_status(
+                    "NORMAL", src_ip, dst_ip, rate_to_log, threat_score, phase,
                 )
 
         self._send_packet_out(datapath, msg, in_port, actions)

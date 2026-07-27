@@ -93,93 +93,9 @@ NORMALS = {f'h{i}': f'10.0.0.{i}' for i in range(1, 26)
 # PRINT HELPERS
 # =============================================================================
 def print_banner():
-    W = 78
     out('')
-    out(c('🔒  SDN ICMP Flood Detection & Mitigation System'.center(W), BOLD + WHITE))
-    out(c('Enterprise Tree Topology  ·  OpenFlow 1.3'.center(W), SKY))
-
-
-def print_topology(net):
-    section('📡', 'Topology', SKY)
-
-    info_rows = [
-        ('Core',   c('s1', BOLD + TEAL),        c('(DPID=1)', DIM + WHITE)),
-        ('Access', c('s2 – s6', BOLD + TEAL),   c('(DPID=2–6)', DIM + WHITE)),
-        ('Hosts',  c('25 total', BOLD + WHITE),  c('(h1–h25, 5 per switch)', DIM + WHITE)),
-        ('Subnet', c('10.0.0.0/24', BOLD + WHITE), c('· OpenFlow 1.3', DIM + WHITE)),
-    ]
-    for label, val, note in info_rows:
-        out(c(f'  {label:<8}', DIM + WHITE) + val + '  ' + note)
-
-    out('')
-
-    T = DIM + CYAN
-    col1, col2, col3 = 10, 14, 32
-
-    def cell(value, width, style, align='<'):
-        return c(f' {value:{align}{width - 1}}', style)
-
-    def row(left, middle, right, middle_style=BOLD + WHITE, right_style=WHITE):
-        return (c('  ', T) + cell(left, col1, BOLD + TEAL) +
-                cell(middle, col2, middle_style) +
-                cell(right, col3, right_style, '^'))
-
-    out(c('  ', T) + cell('Switch', col1, BOLD + WHITE) +
-        cell('Hosts', col2, BOLD + WHITE) +
-        cell('Role', col3, BOLD + WHITE, '^'))
-
-    rows = [
-        ('s2', 'h1–h5',   RED,     'h1 = Attacker 🔴'),
-        ('s3', 'h6–h10',  RED,     'h7 = Attacker 🔴'),
-        ('s4', 'h11–h15', RED,     'h13 = Attacker 🔴'),
-        ('s5', 'h16–h20', RED,     'h18 = Attacker 🔴'),
-        ('s6', 'h21–h25', MAGENTA, 'h25 = Victim 🎯'),
-    ]
-
-    for sw, hosts, color, note in rows:
-        out(row(sw, hosts, note, right_style=color))
-
-
-def verify_and_print_status(net):
-    section('✅', 'Network Status', LIME)
-
-    ctrl = net.controllers[0]
-    out(c('  Controller  ', DIM + WHITE) +
-        c(ctrl.name, BOLD + GREEN) +
-        c('  →  ', DIM + WHITE) +
-        c(f'{ctrl.ip}:{ctrl.port}', BOLD + LIME))
-
-    all_connected = all(
-        'tcp:127.0.0.1:6653' in sw.cmd(f'ovs-vsctl get-controller {sw.name}').strip()
-        for sw in net.switches
-    )
-    all_of13 = all(
-        'OpenFlow13' in sw.cmd(f'ovs-vsctl get bridge {sw.name} protocols').strip()
-        for sw in net.switches
-    )
-
-    conn_str = (c('6/6 connected', BOLD + LIME) if all_connected
-                else c('⚠  check controller', BOLD + YELLOW))
-    of_str   = (c('OpenFlow 1.3 ✓', BOLD + LIME) if all_of13
-                else c('⚠  protocol mismatch', BOLD + YELLOW))
-
-    out(c('  Switches    ', DIM + WHITE) + conn_str + c('  ·  ', DIM + WHITE) + of_str)
-    out(c('  Logging     ', DIM + WHITE) + c('/home/kali/sdn-icmp/logs/', BOLD + SKY))
-    out(c('  6 switches  ·  25 hosts  (4 attacker · 20 normal · 1 victim)', DIM + WHITE))
-
-    if not all_connected:
-        out('')
-        out(c('  ⚠  Pastikan Ryu berjalan:', BOLD + YELLOW))
-        out(c('     sudo ryu-manager controller/controller.py', YELLOW))
-
-
-def print_cheatsheet():
-    out('')
-    out(c('  pingall', SKY))
-    out(c('  h2 ping -i 1 10.0.0.25 &', LIME))
-    out(c('  h1 hping3 --icmp -i u1000 10.0.0.25 &', RED))
-    out(c('  h1 pkill hping3', GOLD))
-    out(c('  sh ovs-ofctl -O OpenFlow13 dump-flows s1', SKY))
+    out(c('🔒  SDN ICMP Flood Detection & Mitigation System', BOLD + WHITE))
+    out(c('Enterprise Tree Topology  ·  OpenFlow 1.3', SKY))
     out('')
 
 
@@ -206,9 +122,6 @@ def run():
     time.sleep(1)
 
     print_banner()
-    print_topology(net)
-    verify_and_print_status(net)
-    print_cheatsheet()
 
     info(c('*** Mininet CLI ready\n', BOLD + LIME))
     CLI(net)

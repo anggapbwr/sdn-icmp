@@ -1,0 +1,4 @@
+scenario,traffic_records,traffic_start,traffic_end,traffic_duration_seconds,traffic_records_per_second,normal_count,suspect_count,attack_confirmed_count,drop_active_count,max_logged_packet_rate_pps,drop_event_count,unique_drop_attackers,primary_pcap,pcap_size_bytes,pcap_packet_count,pcap_duration_seconds,pcap_average_pps
+baseline,5190,2026-07-14 19:28:09.899703,2026-07-14 19:32:56.100659,286.200956,18.134111,5190,0,0,0,8.0,0,0,network_baseline.pcap,443808,3937,284.442345,13.841118
+ddos_unmitigated,70672,2026-07-14 20:17:52.834581,2026-07-14 20:22:35.113238,282.278657,250.362534,2511,0,68097,0,408.0,0,0,network_ddos_unmitigated.pcap,16931376,221898,252.969857,877.171702
+ddos_mitigated,10903,2026-07-14 20:26:14.922891,2026-07-14 20:30:59.156316,284.233425,38.359317,4228,0,6615,0,452.0,4,4,network_ddos_mitigated.pcap,6713364,86613,282.996958,306.056293

@@ -1,2 +1,16 @@
 __pycache__/
 *.pyc
+*.pyo
+*.tmp
+*.swp
+
+.venv/
+
+runtime/*
+!runtime/.gitkeep
+
+evidence/**/*.pcap
+evidence/**/*.csv
+evidence/**/*.log
+evidence/**/*.txt
+evidence/**/*.sha256

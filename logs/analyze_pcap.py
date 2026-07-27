@@ -4,12 +4,26 @@ analyze_pcap.py
 
 Analyzer PCAP final untuk Bab V TA.
 
-Output utama (revisi - total 6 PNG):
-1. Top Source Host per skenario -> 1 PNG per skenario (3 file)
-2. Pie chart distribusi protokol (ICMP/ARP/TCP/UDP/OTHER) per skenario -> 1 PNG per skenario (3 file)
+UPDATED (revisi struktur folder, nama file final, & cakupan output):
+- Path skenario mitigasi diubah dari "logs/archive/ddos/" menjadi
+  "logs/archive/ddos_mitigated/", sesuai struktur folder final.
+- Nama file PCAP mitigasi diubah dari "network_ddos.pcap" /
+  "network_ddos_clean.pcap" menjadi "network_ddos_mitigated.pcap" /
+  "network_ddos_mitigated_clean.pcap", sesuai nama artefak yang
+  benar-benar dihasilkan stop_capture.sh pada eksperimen final.
+- Grafik distribusi protokol (pie chart ICMP/ARP/TCP/UDP/OTHER)
+  DIHAPUS total dari skrip ini karena tidak lagi dipakai pada
+  laporan Bab V. Skrip sekarang hanya menghasilkan satu jenis
+  output: Top Source Host / distribusi sumber ICMP echo request.
+- Judul grafik Top Source Host diseragamkan menjadi pola:
+  "Distribusi Sumber ICMP Echo Request Menuju Victim - Skenario [Nama]"
+
+Output utama (revisi - total 3 PNG):
+1. Top Source Host / Distribusi Sumber ICMP Echo Request per skenario
+   -> 1 PNG per skenario (3 file)
 
 Catatan penting:
-- Skenario DDoS dengan mitigasi menggunakan network_ddos_clean.pcap
+- Skenario DDoS dengan mitigasi menggunakan network_ddos_mitigated_clean.pcap
   karena grafik utama harus merepresentasikan traffic yang masih lolos
   setelah mitigasi, bukan raw traffic.
 - Attacker hanya diberi 1 warna merah (tidak dibedakan per host attacker).
@@ -47,11 +61,14 @@ os.makedirs(OUT_DIR, exist_ok=True)
 PCAP_BASELINE = f"{BASE_DIR}/logs/archive/baseline/network_baseline.pcap"
 PCAP_UNMIT = f"{BASE_DIR}/logs/archive/ddos_unmitigated/network_ddos_unmitigated.pcap"
 
+# UPDATED: folder skenario mitigasi final bernama "ddos_mitigated",
+# dan nama file PCAP-nya "network_ddos_mitigated*.pcap" (bukan "ddos"/
+# "network_ddos*.pcap" seperti versi sebelumnya).
 # Raw PCAP tetap dicatat sebagai referensi, tetapi tidak dipakai untuk grafik utama
-PCAP_MIT_RAW = f"{BASE_DIR}/logs/archive/ddos/network_ddos.pcap"
+PCAP_MIT_RAW = f"{BASE_DIR}/logs/archive/ddos_mitigated/network_ddos_mitigated.pcap"
 
 # Grafik utama mitigasi memakai clean PCAP
-PCAP_MIT_CLEAN = f"{BASE_DIR}/logs/archive/ddos/network_ddos_clean.pcap"
+PCAP_MIT_CLEAN = f"{BASE_DIR}/logs/archive/ddos_mitigated/network_ddos_mitigated_clean.pcap"
 
 VICTIM_IP = "10.0.0.25"
 
@@ -95,22 +112,8 @@ HOST_NAMES = {
 # 1. STYLE UI
 # ============================================================
 
-SCEN_COLORS = {
-    "Baseline": "#4daf4a",
-    "DDoS Tanpa Mitigasi": "#e41a1c",
-    "DDoS Dengan Mitigasi": "#377eb8",
-}
-
 # Attacker hanya diberi 1 warna merah (tidak dibedakan per host attacker).
 ATTACKER_COLOR = "#e41a1c"
-
-PROTO_COLORS = {
-    "ICMP": "#4A90D9",
-    "ARP": "#8E44AD",
-    "TCP": "#27AE60",
-    "UDP": "#F5A623",
-    "OTHER": "#95A5A6",
-}
 
 NORMAL_COLOR = "#95A5A6"
 OTHER_COLOR = "#D0D3D4"
@@ -455,7 +458,7 @@ def chart_top_source_host(scenario, df, note_suffix=""):
     ax.set_axisbelow(True)
 
     ax.set_title(
-        f"Top Source Host Incoming ICMP Request Menuju Victim - {scenario}",
+        f"Distribusi Sumber ICMP Echo Request Menuju Victim \u2013 Skenario {scenario}",
         fontsize=14,
         fontweight="bold",
         loc="left",
@@ -490,123 +493,6 @@ def chart_top_source_host(scenario, df, note_suffix=""):
 
 
 # ============================================================
-# 5. PIE CHART DISTRIBUSI PROTOKOL (1 PNG per skenario)
-# ============================================================
-
-def protocol_label_text(counts, ordered_protocols, total):
-    lines = []
-
-    for proto in ordered_protocols:
-        value = int(counts.get(proto, 0))
-        pct = value / total * 100 if total else 0
-        lines.append(f"{proto}: {pct:.1f}% ({value:,})")
-
-    return "\n".join(lines)
-
-
-def chart_protocol_distribution(scenario, df, note_suffix=""):
-    fig, ax = plt.subplots(figsize=(8, 8))
-
-    if df.empty:
-        ax.set_title(f"{scenario} - Data kosong", fontsize=13, fontweight="bold")
-        ax.axis("off")
-        filename = f"protocol_distribution_{scenario_slug(scenario)}.png"
-        save_chart(filename)
-        return
-
-    counts = df["proto"].value_counts()
-
-    ordered_protocols = [
-        proto for proto in ["ICMP", "ARP", "TCP", "UDP", "OTHER"]
-        if proto in counts.index
-    ]
-
-    values = [int(counts[proto]) for proto in ordered_protocols]
-    colors = [PROTO_COLORS.get(proto, OTHER_COLOR) for proto in ordered_protocols]
-    total = int(sum(values))
-
-    ax.pie(
-        values,
-        labels=None,
-        colors=colors,
-        startangle=90,
-        counterclock=False,
-        wedgeprops={
-            "width": 0.38,
-            "edgecolor": "white",
-            "linewidth": 2,
-        },
-    )
-
-    ax.text(
-        0,
-        0.05,
-        f"{total:,}",
-        ha="center",
-        va="center",
-        fontsize=15,
-        fontweight="bold",
-        color="#2C3E50"
-    )
-
-    ax.text(
-        0,
-        -0.13,
-        "total paket",
-        ha="center",
-        va="center",
-        fontsize=9,
-        color="#7F8C8D"
-    )
-
-    ax.set_title(f"Distribusi Protokol - {scenario}", fontsize=14, fontweight="bold", pad=14)
-    ax.axis("equal")
-
-    label_text = protocol_label_text(counts, ordered_protocols, total)
-
-    ax.text(
-        0,
-        -1.32,
-        label_text,
-        ha="center",
-        va="top",
-        fontsize=9.5,
-        color="#34495E",
-        linespacing=1.5
-    )
-
-    proto_handles = [
-        mpatches.Patch(color=PROTO_COLORS[proto], label=proto)
-        for proto in ["ICMP", "ARP", "TCP", "UDP", "OTHER"]
-        if proto in ordered_protocols
-    ]
-    ax.legend(
-        handles=proto_handles,
-        loc="upper left",
-        bbox_to_anchor=(-0.25, 1.1),
-        frameon=False,
-        fontsize=9,
-    )
-
-    note = "Kategori: ICMP / ARP / TCP / UDP / OTHER."
-    if note_suffix:
-        note += f" {note_suffix}"
-
-    fig.text(
-        0.5,
-        -0.02,
-        note,
-        ha="center",
-        fontsize=8.5,
-        color="#7F8C8D",
-        style="italic"
-    )
-
-    filename = f"protocol_distribution_{scenario_slug(scenario)}.png"
-    save_chart(filename)
-
-
-# ============================================================
 # 6. EKSEKUSI
 # ============================================================
 
@@ -615,14 +501,9 @@ if __name__ == "__main__":
 
     print("  [1] Top Source Host per Skenario (3 PNG)")
     for scenario, df in SCENARIO_DATA:
-        note = "Skenario mitigasi menggunakan network_ddos_clean.pcap." if scenario == "DDoS Dengan Mitigasi" else ""
+        note = "Skenario mitigasi menggunakan network_ddos_mitigated_clean.pcap." if scenario == "DDoS Dengan Mitigasi" else ""
         chart_top_source_host(scenario, df, note_suffix=note)
 
-    print("\n  [2] Distribusi Protokol per Skenario (3 PNG)")
-    for scenario, df in SCENARIO_DATA:
-        note = "Skenario mitigasi menggunakan network_ddos_clean.pcap." if scenario == "DDoS Dengan Mitigasi" else ""
-        chart_protocol_distribution(scenario, df, note_suffix=note)
-
     print("\n" + "=" * 72)
-    print(f"  SELESAI - Output tersimpan di: {OUT_DIR} (total 6 PNG)")
+    print(f"  SELESAI - Output tersimpan di: {OUT_DIR} (total 3 PNG)")
     print("=" * 72 + "\n")
